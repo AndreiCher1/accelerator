@@ -32,6 +32,20 @@ func NewUnauthorized(msg string) *HTTPError {
 	}
 }
 
+func NewForbidden() *HTTPError {
+	return &HTTPError{
+		Code:    http.StatusForbidden,
+		Message: "Ошибка доступа",
+	}
+}
+
+func NewNotFound(msg string) *HTTPError {
+	return &HTTPError{
+		Code:    http.StatusNotFound,
+		Message: msg,
+	}
+}
+
 func NewConflict(msg string) *HTTPError {
 	return &HTTPError{
 		Code:    http.StatusConflict,

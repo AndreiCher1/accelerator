@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"regexp"
+
 	"github.com/go-playground/validator/v10"
 )
 
@@ -20,9 +22,9 @@ func GetMessageFromValidateError(err error) string {
 		// Формируем понятное сообщение об ошибке в зависимости от нарушенного правила
 		switch fieldError.Tag() {
 		case "required":
-			return  "Поле обязательно для заполнения: " + fieldName
+			return "Поле обязательно для заполнения: " + fieldName
 		case "email":
-			return  "Введите корректный email адрес"
+			return "Введите корректный email адрес"
 		case "min":
 			return "Минимальная длина поля - 8 символов: " + fieldName
 		default:
@@ -31,4 +33,11 @@ func GetMessageFromValidateError(err error) string {
 	}
 
 	return "Ошибка валидации"
+}
+
+func ValidateFio(fl validator.FieldLevel) bool {
+	// Регулярное выражение для кириллицы, дефисов и пробелов
+	// ^[А-ЯЁа-яё]+(?:[ -][А-ЯЁа-яё]+)*$
+	re := regexp.MustCompile(`^[А-ЯЁа-яё]+(?:[ -][А-ЯЁа-яё]+)*$`)
+	return re.MatchString(fl.Field().String())
 }

@@ -7,24 +7,26 @@ import (
 )
 
 type Config struct {
-	ServerPort       string
-	JWTAccessSecret  string
-	JWTRefreshSecret string
-	AccessTime       time.Duration
-	RefreshTime      time.Duration
-	DBDSN            string
-	SizeLimitAudioMB int
+	ServerPort             string
+	JWTAccessSecret        string
+	JWTRefreshSecret       string
+	AccessTime             time.Duration
+	RefreshTime            time.Duration
+	DBDSN                  string
+	SizeLimitAudioMB       int
+	GeneratePasswordLength int
 }
 
 func LoadConfig() *Config {
 	return &Config{ // все горутины будут работать с одним конфигом по указателю, поэтому можно его оперативно менять ну и плюс не будет возникать постоянных копий
-		ServerPort:       getEnvString("SERVER_PORT", ":8000"),
-		JWTAccessSecret:  getEnvString("JWT_ACCESS_SECRET", "F8p0OkFJvXSbfh8nVyP8hzcbmVhwfL6C7fQx6tcENBN"),
-		JWTRefreshSecret: getEnvString("JWT_REFRESH_SECRET", "qWgbTHLYOmi8gtipk2ESGdcYdb2BMI3XV0k3KGfZAFW"),
-		AccessTime:       getEnvDuration("ACCESS_TIME_MINUTE", 15) * time.Minute,
-		RefreshTime:      getEnvDuration("REFRESH_TIME_HOURS", 7*24) * time.Hour,
-		DBDSN:            getEnvString("DB_DSN", "postgres://nikita:1423qewr@postgres:5432/accelerator"),
-		SizeLimitAudioMB: getEnvInt("SIZE_LIMIT_AUDIO_MB", 1024),
+		ServerPort:             getEnvString("SERVER_PORT", ":8000"),
+		JWTAccessSecret:        getEnvString("JWT_ACCESS_SECRET", "F8p0OkFJvXSbfh8nVyP8hzcbmVhwfL6C7fQx6tcENBN"),
+		JWTRefreshSecret:       getEnvString("JWT_REFRESH_SECRET", "qWgbTHLYOmi8gtipk2ESGdcYdb2BMI3XV0k3KGfZAFW"),
+		AccessTime:             getEnvDuration("ACCESS_TIME_MINUTE", 15) * time.Minute,
+		RefreshTime:            getEnvDuration("REFRESH_TIME_HOURS", 7*24) * time.Hour,
+		DBDSN:                  getEnvString("DB_DSN", "postgres://nikita:1423qewr@postgres:5432/accelerator"),
+		SizeLimitAudioMB:       getEnvInt("SIZE_LIMIT_AUDIO_MB", 1024),
+		GeneratePasswordLength: getEnvInt("GENERATE_PASSWORD_LENGTH", 10),
 	}
 
 }
