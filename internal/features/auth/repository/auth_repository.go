@@ -38,49 +38,6 @@ func (repo *AuthRepo) BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, 
 	return repo.pool.BeginTx(ctx, opts)
 }
 
-
-
-
-// АНОНИМНАЯ ФУНКЦИЯ ДЛЯ РАБОТЫ ЧЕРЕЗ ИНТЕРФЕЙС ПОДКЛЮЧЕНИЯ
-// принимает email и хеш пароля, интерфейс работы с бд, через транзакцию или через pool
-// сохраняем пользователя в бд, получаем его id, возвращаем ошибки
-// возвращаем id пользователя для генерации jwt токена
-func (repo *AuthRepo) createUser(ctx context.Context, e executor, email, passwordHash string) (string, error) {
-	sqlQuery := `
-	INSERT INTO users (email, password_hash) 
-	VALUES ($1, $2)
-	RETURNING id;
-	`
-	var id string // обработка ошибки откладывается до момента получения id, pgx.Row закроется самостоятельно после Scan
-	err := e.QueryRow(ctx, sqlQuery, email, passwordHash).Scan(&id) // уже работаем либо через tx либо pool
-	/*
-		errors.As идёт по цепочке ошибок (распаковывая их через методы Unwrap(), Unwrap() []error и т.д.) и пытается присвоить первой же ошибке, которая может быть присвоена типу target.
-		Если находит — записывает её в переменную, на которую указывает target, и возвращает true
-		Если не находит — возвращает false, а target остаётся без изменений
-	*/
-	// !!!!! теперь я понял, из интерфейса error, который возвращается из Scan вытаскиваем внутреннюю кастомную ошибку типа *pgconn.PgError, такое нужно когда кастомную ошибку вернули из функцию как обычную error
-	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "23505" { // Это код, когда запись уже существует в бд, т епользователь с такой почтой уже существует
-		return "", error_type.NewConflict("A user with such an email already exists")
-	} else if err != nil { // в id может вернуться значение по умолчанию или остаться пустая строка
-		return "", error_type.NewInternal(fmt.Errorf("create user: %w", err)) // иначе другая любая ошибка базы данных
-	}
-
-	return id, nil
-}
-
-// публичная обертка для добавления пользователя через pool
-// так как мы не сможем передать в параметр executor - pool из сервиса, потому что он инкапсулирован внутри репозитория
-func (repo *AuthRepo) CreateUser(ctx context.Context, email, passwordHash string) (string, error) {
-	return repo.createUser(ctx, repo.pool, email, passwordHash)
-}
-// публичная обертка для добавления пользователя через tx
-// сам tx уже передается на уровне бизнес логики, чтобы управлять коммитами и ролбеками в случае ошибок уровня сервиса
-func (repo *AuthRepo) CreateUserTx(ctx context.Context, tx pgx.Tx,  email, passwordHash string) (string, error) {
-	return repo.createUser(ctx, tx, email, passwordHash)
-}
-
-
-
 // АНОНИМНАЯ ФУНКЦИЯ ДЛЯ РАБОТЫ ЧЕРЕЗ ИНТЕРФЕЙС ПОДКЛЮЧЕНИЯ
 // принимает хеш, уникальный ключ токена, время создания и время исхода рефреш токена
 // создает новую сессию в бд
@@ -125,15 +82,20 @@ func (repo *AuthRepo) CreateSessionTx(
 
 // ДЛЯ ОБЫЧНЫХ SELECT ЗАПРОСОВ НЕ НУЖНЫ ТРАНЗАКЦИИ, ОНИ НЕ МЕНЯЮТ БАЗУ ДАННЫХ
 // проверяет существование пользователя с такой почтой
-// возвращает ошибки, полученный hash от пароля и id пользователя
-func (repo *AuthRepo) GetAuthCredentials(ctx context.Context, email string) (*domains.UserAuthInfo, error) {
+// возвращает ошибки, полученный hash от пароля, id пользователя, роль и флаг, временный ли пароль
+func (repo *AuthRepo) GetAuthCredentials(ctx context.Context, login string) (*domains.UserAuthInfo, error) {
     sqlQuery := `
-        SELECT id, password_hash 
+        SELECT id, password_hash, role, temporary_password
         FROM users 
-        WHERE email = $1;
+        WHERE login = $1;
     `
 	var info domains.UserAuthInfo
-    err := repo.pool.QueryRow(ctx, sqlQuery, email).Scan(&info.ID, &info.PasswordHash)
+    err := repo.pool.QueryRow(ctx, sqlQuery, login).Scan(
+		&info.ID, 
+		&info.PasswordHash,
+		&info.Role,
+		&info.TemporaryPassword,
+	)
     if errors.Is(err, pgx.ErrNoRows) { // специальный тип ошибки, если ничего не вернулось
         return nil, error_type.NewUnauthorized("Invalid login or password") // пользователь не найден
     } else if err != nil {
@@ -141,8 +103,6 @@ func (repo *AuthRepo) GetAuthCredentials(ctx context.Context, email string) (*do
     }
     return &info, nil
 }
-
-
 
 
 // принимает jti рефреш токена
@@ -215,4 +175,24 @@ func (repo *AuthRepo) RevokeSession(ctx context.Context, jti string) error {
 }
 func (repo *AuthRepo) RevokeSessionTx(ctx context.Context, tx pgx.Tx, jti string) error {
 	return repo.revokeSession(ctx, tx, jti)
+}
+
+// =========================== ИЗМЕНЕНИЕ ВРЕМЕННОГО ПАРОЛЯ ====================================
+
+func (repo *AuthRepo) UpdateTempPassword(ctx context.Context, callerID, passwordHash string) error {
+	sqlQuery := `
+		UPDATE users
+		SET password_hash = $1
+		WHERE id = $2;
+	`
+
+	cmdTag, err := repo.pool.Exec(ctx, sqlQuery, passwordHash, callerID)
+    if err != nil {
+        return error_type.NewInternal(fmt.Errorf("update temperary password: %w", err))
+    }
+    if cmdTag.RowsAffected() == 0 { // если ничего не вернулось из exec
+        return error_type.NewUnauthorized("user not found") // пользователь не найден
+    }
+	
+	return nil
 }

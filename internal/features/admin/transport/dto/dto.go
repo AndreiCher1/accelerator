@@ -30,9 +30,9 @@ type MembersResponseDTO struct {
 }
 
 type PaginationResponseDTO struct {
-	Page  string `json:"page"`
-	Limit string `json:"limit"`
-	Total int64  `json:"total"`
+	Page  int   `json:"page"`
+	Limit int   `json:"limit"`
+	Total int64 `json:"total"`
 }
 
 type UserIDRequestDTO struct {
