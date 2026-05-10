@@ -406,14 +406,14 @@ func (trans *AdminTransport) CreateGroupHandle(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// вызываем сервис, получаем от него модель группы
+	// вызываем сервис, получаем от него модель группы и флаги
 
-	// маппим модель в GroupResponseDTO и отсылаем на клиент
+	// маппим модель и отсылаем на клиент
 }
 
 // ========================= ПОЛУЧИТЬ УЧАСТНИКОВ ГРУППЫ  ==========================
 
-type GetMembersGroupRequestDTO struct {
+type GetMembersGroupResponseDTO struct {
 	GroupID     string                   `json:"group_id"`
 	Name        string                   `json:"name"`
 	Description string                   `json:"description"`

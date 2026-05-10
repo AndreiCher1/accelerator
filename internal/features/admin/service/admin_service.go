@@ -8,6 +8,8 @@ import (
 	"accelerator/internal/tools"
 	"context"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type AdminService struct {
@@ -50,11 +52,11 @@ func (serv *AdminService) AddCreatorService(ctx context.Context, login, password
 	}
 
 	userInfo := domains.User{
-		ID:        userID,
-		Login:     login,
-		FullName:  fullname,
-		Position:  position,
-		Role:      "creator",
+		ID:       userID,
+		Login:    login,
+		FullName: fullname,
+		Position: position,
+		Role:     "creator",
 	}
 
 	return &userInfo, nil
@@ -105,11 +107,11 @@ func (serv *AdminService) RegisterNewUserService(ctx context.Context, callerID, 
 	}
 
 	userInfo := domains.User{
-		ID:                userID,
-		Login:             login,
-		FullName:          fullname,
-		Position:          position,
-		Role:              role,
+		ID:       userID,
+		Login:    login,
+		FullName: fullname,
+		Position: position,
+		Role:     role,
 	}
 
 	return &userInfo, password, nil
@@ -262,8 +264,6 @@ func (serv *AdminService) ResetPasswordService(ctx context.Context, callerID, ta
 	return password, nil
 }
 
-
-
 // ====================== УДАЛИТЬ ПОЛЬЗОВАТЕЛЯ =======================
 func (serv *AdminService) DeleteUserService(ctx context.Context, callerID, targetID string) error {
 	// получаем по ID из токена информацию о том, кто делает запрос
@@ -308,121 +308,229 @@ func (serv *AdminService) DeleteUserService(ctx context.Context, callerID, targe
 
 // // ====================================================== СЕРВИСЫ ВЗАИМОДЕЙСТВИЯ С ГРУППАМИ ==============================================
 
-// // ========================= СОЗДАТЬ ГРУППУ ==========================
+// ========================= СОЗДАТЬ ГРУППУ ==========================
 
-// // возвращает информацию о группе и ошибку
-// func (serv *AdminService) CreateGroupService(callerID, name, description string) (domains.Group, error) {
-// 	// получаем по ID из токена информацию о том, кто делает запрос
-// 	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
-// 	if err != nil {
-// 		return nil, "", err
-// 	}
+// возвращает информацию о группе и ошибку
+func (serv *AdminService) CreateGroupService(ctx context.Context, callerID, name, description string) (*domains.Group, *domains.ChangeFlags, error) {
+	tx, err := serv.repo.BeginTx(ctx, pgx.TxOptions{}) // создаем транзакцию
+	if err != nil {
+		return nil, nil, error_type.NewInternal(fmt.Errorf("begin tx: %w", err))
+	}
+	defer func() { // при какой либо ошибке перед завершением функции откатываем изменения базы данных
+		_ = tx.Rollback(ctx)
+	}()
 
-// 	// если креатор или админ, юзер не может тут ничего удалять
-// 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-// 		return error_type.NewForbidden()
-// 	}
+	// получаем по ID из токена информацию о том, кто делает запрос
+	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// 	// в репозитории добавляем группу с created_by = caller.id
+	// если креатор или админ, юзер не может тут ничего удалять
+	if callerUser.Role != "creator" && callerUser.Role != "admin" {
+		return nil, nil, error_type.NewForbidden()
+	}
 
-// 	// потом ищем креатора в репозитории
+	// в репозитории добавляем группу с created_by = caller.id
+	groupID, err := serv.repo.CreateGroupTx(ctx, tx, name, description, callerID)
+	if err != nil {
+		return  nil, nil, err
+	}
 
-// 	// В group_members для GroupID добавляются callerID и creatorID
+	// потом ищем креатора в репозитории
+	creatorID, err := serv.repo.SelectCreatorID(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// 	// вычисляем флаги
+	// В group_members для GroupID добавляются callerID и creatorID
+	if err := serv.repo.InsertUserIntoGroup(ctx, groupID, callerID); err != nil {
+		return  nil, nil, err
+	}
+	if err := serv.repo.InsertUserIntoGroup(ctx, groupID, creatorID); err != nil {
+		return nil, nil, err
+	}
 
-// 	// репозиторий возвратил группу, мы ее передаем в транспорт
-// }
+	// собираем информацию о группе в домен для передачи в транспорт
+	newGroup := domains.Group{
+		GroupID: groupID,
+		Name: name,
+		Description: description,
+		CreatedBy: callerID,
+	}
 
-// // ========================= ПОЛУЧИТЬ УЧАСТНИКОВ ГРУППЫ  ==========================
-// // возвращает слайc user и ошибку
-// func (serv *AdminService) GetMembersGroupService(callerID, groupID string) (*[]domains.User, error) {
-// 	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
-// 	if err != nil {
-// 		return nil, "", err
-// 	}
+	// вычисляем флаги
+	changeFlags := domains.ChangeFlags{
+		CanEdit: true, // может изменить группу, которую создал
+		CanDelete: true, // может удалить группу, которую создал
+	}
 
-// 	// если креатор или админ, юзер не может тут ничего удалять
-// 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-// 		return nil, error_type.NewForbidden()
-// 	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, error_type.NewInternal(fmt.Errorf("commit tx: %w", err))
+	}
 
-// 	// креатор видит всех, кроме себя
-// 	if callerUser.Role == "creator" {
-// 		// репозиторий where role="user" OR role="admin"
-// 	}
+	return &newGroup, &changeFlags, nil
+}
 
-// 	// админ видит всех user
-// 	if callerUser.Role == "admin" {
-// 		// проверить, что callerUser.ID есть в этой группе, а потом
+// ========================= ПОЛУЧИТЬ УЧАСТНИКОВ ГРУППЫ  ==========================
+// возвращает слайc user и ошибку
+func (serv *AdminService) GetMembersGroupService(ctx context.Context, callerID, groupID string) (*[]domains.User, *domains.Group, error) {
+	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// 		// репозиторий where role="user"
-// 	}
+	// если креатор или админ, юзер не может тут ничего удалять
+	if callerUser.Role != "creator" && callerUser.Role != "admin" {
+		return nil, nil, error_type.NewForbidden()
+	}
 
-// 	// вычисляем флаги
+	var usersIntoGroup *[]domains.User
 
-// 	// из репозитория получили слайс доменов, сразу кидаем в транспорт
+	// креатор видит всех, кроме себя
+	if callerUser.Role == "creator" {
+		// репозиторий where role="user" OR role="admin"
+		usersIntoGroup, err = serv.repo.SelectUsersWithAdminFirstIntoGroup(ctx, groupID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
-// }
+	// админ видит всех user
+	if callerUser.Role == "admin" {
+		// проверить, что callerUser.ID есть в этой группе, а потом
+		consists, err := serv.repo.IsUserIntoGroup(ctx, callerID, groupID)
+		if err != nil {
+			return  nil, nil, err
+		}
+		if !consists {
+			return nil, nil, error_type.NewNotFound("группа, над которой хотят совершить действие не найдена") // админ не должен знать о существовании группы, в которой его нет
+		}
+		// репозиторий where role="user"
+		usersIntoGroup, err = serv.repo.SelectOnlyUsersIntoGroup(ctx, groupID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
-// // ========================= ПОЛУЧИТЬ ВСЕ ГРУППЫ  ==========================
-// // возвращает слайc group и ошибку
-// func (serv *AdminService) GetGroupsService(callerID string) (*[]domains.Group, error) {
-// 	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
-// 	if err != nil {
-// 		return nil, "", err
-// 	}
+	// получаем информацию о группе
+	groupInfo, err := serv.repo.SelectGroupInfo(ctx, groupID)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// 	// если креатор или админ, юзер не может тут ничего удалять
-// 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-// 		return nil, error_type.NewForbidden()
-// 	}
+	// из репозитория получили слайс доменов, сразу кидаем в транспорт
+	return usersIntoGroup, groupInfo, nil
 
-// 	// креатор видит все группы
-// 	if callerUser.Role == "creator" {
-// 		// в репозитории возвращаем все группы
-// 	}
+}
 
-// 	// админ видит все группы, в которых состоит, т е у которые добавил его креатор
-// 	if callerUser.Role == "admin" {
-// 		// репозиторий вовзращает все группы, где callerUser.ID есть в group_members
-// 	}
+// ========================= ПОЛУЧИТЬ ВСЕ ГРУППЫ  ==========================
+// возвращает слайc group, флагов и ошибку
+func (serv *AdminService) GetGroupsService(ctx context.Context, callerID string) (*[]domains.Group, *[]domains.ChangeFlags, error) {
+	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// 	// вычисляем флаги для каждой группы и делаем массив из них
+	// если креатор или админ, юзер не может тут ничего удалять
+	if callerUser.Role != "creator" && callerUser.Role != "admin" {
+		return nil, nil, error_type.NewForbidden()
+	}
 
-// 	// из репозитория получили слайс доменов групп, сразу кидаем в транспорт
-// }
+	var groupsInfo *[]domains.Group
+	flags := make([]domains.ChangeFlags, 0) 
+
+	// креатор видит все группы
+	if callerUser.Role == "creator" {
+		// в репозитории возвращаем все группы
+		groupsInfo, err = serv.repo.SelectGroupsForCreator(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// вычисляем флаги для каждой группы и делаем массив из них
+		// креатор, может изменять и удалять любую, так что создаем одинаковый массив
+		for i := 0; i < len(*groupsInfo); i++ {
+			flag := domains.ChangeFlags{
+				CanEdit: true,
+				CanDelete: true,
+			}
+
+			flags = append(flags, flag)
+		}
+	}
+
+	// админ видит все группы, в которых состоит, т е у которые добавил его креатор
+	if callerUser.Role == "admin" {
+		// репозиторий вовзращает все группы, где callerUser.ID есть в group_members
+		groupsInfo, err = serv.repo.SelectGroupsForAdmin(ctx, callerID)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// вычисляем флаги для каждой группы и делаем массив из них
+		// админ же может изменять и удалять только созданные группы
+		for i := 0; i < len(*groupsInfo); i++ {
+			var flag domains.ChangeFlags
+
+			if (*groupsInfo)[i].CreatedBy == callerID {
+				flag = domains.ChangeFlags{
+					CanEdit: true,
+					CanDelete: true,
+				}
+			} else {
+				flag = domains.ChangeFlags{
+					CanEdit: false,
+					CanDelete: false,
+				}
+			}
+			
+
+			flags = append(flags, flag)
+		}
+	}
+
+	// из репозитория получили слайс доменов групп, сразу кидаем в транспорт
+	return groupsInfo, &flags, nil
+}
 
 // // ======================== ИЗМЕНИТЬ ИНФОРМАЦИЮ О ГРУППЕ  ==========================
 
-// func (serv *AdminService) EditGroupService(callerID, groupID string, editInfo map[string]string) (*domains.Group, error) {
-// 	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
-// 	if err != nil {
-// 		return nil, "", err
-// 	}
+func (serv *AdminService) EditGroupService(ctx context.Context, callerID, groupID string, editInfo map[string]string) (*domains.Group, error) {
+	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
+	if err != nil {
+		return nil, err
+	}
 
-// 	// если креатор или админ, юзер не может тут ничего изменять
-// 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-// 		return nil, error_type.NewForbidden()
-// 	}
+	// если креатор или админ, юзер не может тут ничего изменять
+	if callerUser.Role != "creator" && callerUser.Role != "admin" {
+		return nil, error_type.NewForbidden()
+	}
 
-// 	// по groupID проверить, существует ли группа в репозитории
-// 	groupInfo :=
+	// по groupID проверить, существует ли группа в репозитории
+	groupInfo, err := serv.repo.SelectGroupInfo(ctx, groupID)
+	if err != nil { // группы не существует
+		return  nil, err
+	}
 
-// 	if callerUser.Role != "creator" {
-// 		// вызываем репозиторий, передаем editInfo, можем изменять любую группу
-// 	}
+	if callerUser.Role != "creator" {
+		// вызываем репозиторий, передаем editInfo, можем изменять любую группу
+	}
 
-// 	if callerUser.Role != "admin" {
-// 		// проверяем, что в группе полученной groupInfo.CreatedBy == callerUser.ID
-// 		// вызываем репозиторий, передаем editInfo
-// 	}
+	if callerUser.Role != "admin" {
+		// проверяем, что в группе полученной groupInfo.CreatedBy == callerUser.ID
+		if groupInfo.CreatedBy != callerID { // не показываем, что такая группа есть
+			return nil, error_type.NewNotFound("группа, над которой хотят совершить действие не найдена")
+		}
 
-// 	// вычисляем флаги
+		// вызываем репозиторий, передаем editInfo
+	}
 
-// 	// получили данные, кидаем в транспорт, там собираем ответ
+	// вычисляем флаги
 
-// }
+	// получили данные, кидаем в транспорт, там собираем ответ
+
+}
 
 // // ====================== ДОБАВИТЬ ПОЛЬЗОВАТЕЛЯ В ГРУППУ  ==========================
 

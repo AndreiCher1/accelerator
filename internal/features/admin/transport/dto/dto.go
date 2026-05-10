@@ -15,9 +15,19 @@ type GroupResponseDTO struct {
 	GroupID     string    `json:"group_id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	MemberCount string    `json:"number_count,omitempty"` // не везде будем передавать, поэтому делаем необязательным
+	MemberCount int       `json:"number_count,omitempty"` // не везде будем передавать, поэтому делаем необязательным
 	CreatedBy   string    `json:"created_by"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type GroupChangeFlagsResponseDTO struct {
+	CanEdit   bool `json:"can_edit"`
+	CanDelete bool `json:"can_delete"`
+}
+
+type FullInfoGroupResponseDTO struct {
+	Groups      GroupResponseDTO            `json:"group"`
+	ChangeFlags GroupChangeFlagsResponseDTO `json:"flags"`
 }
 
 type MembersResponseDTO struct {
