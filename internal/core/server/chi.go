@@ -35,19 +35,34 @@ func StartNewChiServer(
 		// создаем группу c admin префиксом
 		router.Route("/admin", func(router chi.Router) {
 			router.Use(middleware.AuthMiddleware(cfg)) // проверяет токен и загружает в контекст ID
-			router.Post("/users", adminTrans.RegisterNewUserHandle)
-			router.Get("/users", adminTrans.GetUsersHandle) 
-			router.Put("/users/{userID}", adminTrans.EditUserHandle)
-			router.Post("/users/{userID}/reset-password", adminTrans.ResetPasswordHandle)
-			router.Delete("/users/{userID}", adminTrans.DeleteUserHandle)
-
-			router.Post("/groups", adminTrans.CreateGroupHandle)
-			router.Get("/groups/{groupID}", adminTrans.GetMembersGroupHandle)
-			router.Get("/groups", adminTrans.GetGroupsHandle)
-			router.Put("/groups/{groupID}", adminTrans.EditGroupHandle)
-			router.Post("/groups/{groupID}/members/{userID}", adminTrans.AddUserGroupHandle)
-			router.Delete("/groups/{groupID}/members/{userID}", adminTrans.DeleteUserGroupHandle)
-			router.Delete("/groups/{groupID}", adminTrans.DeleteGroupHandle)
+			router.Route("/users", func(router chi.Router) {
+				// регистрация нового пользователя, креатор може всех, админ только user
+				router.Post("/", adminTrans.RegisterNewUserHandle)
+				// получить пользователей, креатор видит всех, кроме себя, админ только user
+				router.Get("/", adminTrans.GetUsersHandle) 
+				// изменить пользователя, креатор можетменять всех и повышать user до admin, а админ может менять только user и не может менять роль
+				router.Put("/{userID}", adminTrans.EditUserHandle)
+				// сбрасывает пароль, креатор может сбросить кому угодно, кроме себя, а админ только user
+				router.Post("/{userID}/reset-password", adminTrans.ResetPasswordHandle)
+				// удалить пользователя, креатор всех кроме себя, админ только user
+				router.Delete("/{userID}", adminTrans.DeleteUserHandle)
+			})
+			router.Route("/groups", func(router chi.Router) {
+				// создание группы, доступно только администратору
+				router.Post("/", adminTrans.CreateGroupHandle)
+				// Получение списка групп (каждый видит свои)
+				router.Get("/", adminTrans.GetGroupsHandle)
+				// Информация о группе + участники, креатор видит всех, админ только user, себя не видит
+				router.Get("/{groupID}", adminTrans.GetMembersGroupHandle)
+				// Редактирование группы (права проверяются в сервисе: creator – любую, admin – только свою)
+				router.Put("/{groupID}", adminTrans.EditGroupHandle)
+				// Удаление группы (аналогично)
+				router.Delete("/{groupID}", adminTrans.DeleteGroupHandle)
+				// Добавление участника в группу, админ только user, креатор 
+				router.Post("/{groupID}/members/{userID}", adminTrans.AddUserGroupHandle)
+				// Удаление участника из группы
+				router.Delete("/{groupID}/members/{userID}", adminTrans.DeleteUserGroupHandle)
+			})
 		})
 
 		// авторизация и обновление токенов

@@ -9,5 +9,6 @@ type User struct {
 	Position          string
 	Role              string
 	TemporaryPassword bool // нужно только для входа, взаимодействуем только там
+	AddedAt          time.Time
 	CreatedAt         time.Time
 }

@@ -8,5 +8,8 @@ type Group struct {
 	Description string
 	MemberCount int
 	CreatedBy   string
+	OwnerID     string
 	CreatedAt   time.Time
+	CanEdit     bool
+	CanDelete   bool
 }

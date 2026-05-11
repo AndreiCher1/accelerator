@@ -302,17 +302,17 @@ func (trans *AdminTransport) EditUserHandle(w http.ResponseWriter, r *http.Reque
 
 	// маппим данные из домена в dto response
 	newResponse := dto.UserResponseDTO{
-		UserID:   userEditInfo.ID,
-		Login:    userEditInfo.Login,
-		FullName: userEditInfo.FullName,
-		Position: userEditInfo.Position,
-		Role:     userEditInfo.Role,
+		UserID:    userEditInfo.ID,
+		Login:     userEditInfo.Login,
+		FullName:  userEditInfo.FullName,
+		Position:  userEditInfo.Position,
+		Role:      userEditInfo.Role,
 		CreatedAt: userEditInfo.CreatedAt,
 	}
 
 	// записываем данные в ответ
 	tools.WriteJSON(w, http.StatusOK, newResponse)
-	
+
 }
 
 // ====================== СБРОСИТЬ ПАРОЛЬ ДЛЯ ПОЛЬЗОВАТЕЛЯ =======================
@@ -387,196 +387,229 @@ func (trans *AdminTransport) DeleteUserHandle(w http.ResponseWriter, r *http.Req
 
 // ====================================================== МЕТОДЫ ВЗАИМОДЕЙСТВИЯ С ГРУППАМИ ==============================================
 
-// ========================= СОЗДАТЬ ГРУППУ ==========================
-type CreateGroupRequestDTO struct {
-	Name        string `json:"name" validate:"required"`
-	Description string `json:"description" validate:"required"`
+// ---------- Вспомогательные методы ----------
+
+// getCallerID извлекает callerID из контекста (установлен middleware)
+func getCallerID(r *http.Request) string {
+	id, _ := r.Context().Value("userID").(string)
+	return id
 }
 
+// ====================== ГРУППЫ ======================
+
+// CreateGroupHandle создаёт новую группу
 func (trans *AdminTransport) CreateGroupHandle(w http.ResponseWriter, r *http.Request) {
-	newRequest := CreateGroupRequestDTO{}
-
-	if err := json.NewDecoder(r.Body).Decode(&newRequest); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Не удалось распарсить json"))
+	var req dto.CreateGroupRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("не удалось распарсить json"))
+		return
+	}
+	if err := trans.validate.Struct(req); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("ошибка во входных данных"))
 		return
 	}
 
-	if err := trans.validate.Struct(newRequest); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Ошибка во входных данных"))
+	callerID := getCallerID(r)
+
+	group, err := trans.serv.CreateGroupService(r.Context(), callerID, req.Name, req.Description, req.OwnerID)
+	if err != nil {
+		tools.WriteError(w, err)
 		return
 	}
 
-	// вызываем сервис, получаем от него модель группы и флаги
-
-	// маппим модель и отсылаем на клиент
+	resp := dto.GroupResponseDTO{
+		GroupID:     group.GroupID,
+		Name:        group.Name,
+		Description: group.Description,
+		OwnerID:     group.OwnerID,
+		CreatedAt:   group.CreatedAt,
+		CanEdit:     group.CanEdit,
+		CanDelete:   group.CanDelete,
+	}
+	tools.WriteJSON(w, http.StatusCreated, resp)
 }
 
-// ========================= ПОЛУЧИТЬ УЧАСТНИКОВ ГРУППЫ  ==========================
-
-type GetMembersGroupResponseDTO struct {
-	GroupID     string                   `json:"group_id"`
-	Name        string                   `json:"name"`
-	Description string                   `json:"description"`
-	Members     []dto.MembersResponseDTO `json:"members"`
-	CreatedBy   string                   `json:"created_by"`
-	CreatedAt   string                   `json:"created_at"`
-}
-
+// GetMembersGroupHandle возвращает информацию о группе и список участников
 func (trans *AdminTransport) GetMembersGroupHandle(w http.ResponseWriter, r *http.Request) {
-	newRequestGroupID := dto.GroupIDRequestDTO{
-		GroupID: chi.URLParam(r, "groupID"),
-	}
-
-	if err := trans.validate.Struct(newRequestGroupID); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Некорректный ID группы"))
+	groupID := chi.URLParam(r, "groupID")
+	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
 
-	// в сервисе получаем информацию о группе из groups, далее user_id и added_at из таблицы members,
-	// а дальше получаем по user_id информацию о пользователях из users
-	// нужно также отфильтровать исходя из роли, чтобы админ не получал других админов, а креатор получал всех
-	// также исключить чтобы админ не видел себя и креатор не видел себя
+	callerID := getCallerID(r)
+	members, group, err := trans.serv.GetMembersGroupService(r.Context(), callerID, groupID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
 
-	// формируем json ответ в GetMembersGroupRequestDTO
+	memberDTOs := make([]dto.MembersResponseDTO, 0, len(*members))
+	for _, m := range *members {
+		memberDTOs = append(memberDTOs, dto.MembersResponseDTO{
+			UserID:   m.ID,
+			Login:    m.Login,
+			FullName: m.FullName,
+			Position: m.Position,
+			Role:     m.Role,
+			AddedAt:  m.AddedAt,
+		})
+	}
+
+	resp := dto.GetMembersGroupResponseDTO{
+		GroupID:     group.GroupID,
+		Name:        group.Name,
+		Description: group.Description,
+		Members:     memberDTOs,
+		OwnerID:     group.OwnerID,
+		CreatedAt:   group.CreatedAt,
+		CanEdit:     group.CanEdit,
+		CanDelete:   group.CanDelete,
+	}
+	tools.WriteJSON(w, http.StatusOK, resp)
 }
 
-// ========================= ПОЛУЧИТЬ ВСЕ ГРУППЫ  ==========================
-type GetGroupsResponseDTO struct {
-	Groups []dto.GroupResponseDTO
-}
-
+// GetGroupsHandle возвращает список групп, доступных пользователю
 func (trans *AdminTransport) GetGroupsHandle(w http.ResponseWriter, r *http.Request) {
+	callerID := getCallerID(r)
+	groups, err := trans.serv.GetGroupsService(r.Context(), callerID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
 
-	// сервис будет возвращать только те группы, в которых состоит пользователь
-
-	// записываем результат в GetGroupsResponseDTO
+	groupDTOs := make([]dto.GroupResponseDTO, 0, len(*groups))
+	for _, g := range *groups {
+		groupDTOs = append(groupDTOs, dto.GroupResponseDTO{
+			GroupID:     g.GroupID,
+			Name:        g.Name,
+			Description: g.Description,
+			MemberCount: g.MemberCount,
+			OwnerID:     g.OwnerID,
+			CreatedAt:   g.CreatedAt,
+			CanEdit:     g.CanEdit,
+			CanDelete:   g.CanDelete,
+		})
+	}
+	resp := dto.GetGroupsResponseDTO{Groups: groupDTOs}
+	tools.WriteJSON(w, http.StatusOK, resp)
 }
 
-// ======================== ИЗМЕНИТЬ ИНФОРМАЦИЮ О ГРУППЕ  ==========================
-
-type EditGroupRequestDTO struct {
-	Name        *string `json:"name" validate:"omitempty"`
-	Description *string `json:"description" validate:"omitempty"`
-}
-
+// EditGroupHandle изменяет название, описание или владельца группы
 func (trans *AdminTransport) EditGroupHandle(w http.ResponseWriter, r *http.Request) {
-	newRequestGroupID := dto.GroupIDRequestDTO{
-		GroupID: chi.URLParam(r, "groupID"),
-	}
-
-	if err := trans.validate.Struct(newRequestGroupID); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Некорректный ID группы"))
+	groupID := chi.URLParam(r, "groupID")
+	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
 
-	newRequest := EditGroupRequestDTO{}
-
-	if err := json.NewDecoder(r.Body).Decode(&newRequest); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Не удалось распарсить json"))
+	var req dto.EditGroupRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("не удалось распарсить json"))
+		return
+	}
+	if err := trans.validate.Struct(req); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("ошибка во входных данных"))
 		return
 	}
 
-	if err := trans.validate.Struct(newRequest); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Ошибка во входных данных"))
-		return
-	}
-
-	// создаем мапу для измененных значений
 	updateData := make(map[string]string)
-
-	// если nil, значит значение просто не передавали
-	if newRequest.Name != nil {
-		// может быть передана пустая строка
-		if *newRequest.Description == "" {
-			tools.WriteError(w, error_type.NewBadRequest("название группы не может быть пустой строкой"))
+	if req.Name != nil {
+		if *req.Name == "" {
+			tools.WriteError(w, error_type.NewBadRequest("название группы не может быть пустым"))
 			return
 		}
-		updateData["name"] = *newRequest.Name
+		updateData["name"] = *req.Name
 	}
-	if newRequest.Description != nil {
-		if *newRequest.Description == "" {
-			tools.WriteError(w, error_type.NewBadRequest("описание группы не может быть пустой строкой"))
+	if req.Description != nil {
+		if *req.Description == "" {
+			tools.WriteError(w, error_type.NewBadRequest("описание группы не может быть пустым"))
 			return
 		}
-		updateData["description"] = *newRequest.Description
+		updateData["description"] = *req.Description
 	}
-
-	// Проверка, что есть что обновлять
+	if req.OwnerID != nil {
+		updateData["owner_id"] = *req.OwnerID
+	}
 	if len(updateData) == 0 {
-		tools.WriteError(w, error_type.NewBadRequest("нет ни одного переданного аргумента для изменения"))
+		tools.WriteError(w, error_type.NewBadRequest("не передано ни одного поля для изменения"))
 		return
 	}
 
-	// сервис получает updateData изменяет данные группы и возвращает их в модели
-	// проверка, что пользователь состоит в этой группе на всякий случай
+	callerID := getCallerID(r)
+	updatedGroup, err := trans.serv.EditGroupService(r.Context(), callerID, groupID, updateData)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
 
-	// записываем результат в GroupResponseDTO и возвращаем ответ
+	resp := dto.GroupResponseDTO{
+		GroupID:     updatedGroup.GroupID,
+		Name:        updatedGroup.Name,
+		Description: updatedGroup.Description,
+		MemberCount: updatedGroup.MemberCount,
+		OwnerID:     updatedGroup.OwnerID,
+		CreatedAt:   updatedGroup.CreatedAt,
+		CanEdit:     updatedGroup.CanEdit,
+		CanDelete:   updatedGroup.CanDelete,
+	}
+	tools.WriteJSON(w, http.StatusOK, resp)
 }
 
-// ====================== ДОБАВИТЬ ПОЛЬЗОВАТЕЛЯ В ГРУППУ  ==========================
-
+// AddUserGroupHandle добавляет пользователя в группу
 func (trans *AdminTransport) AddUserGroupHandle(w http.ResponseWriter, r *http.Request) {
-	newRequestGroupID := dto.GroupIDRequestDTO{
-		GroupID: chi.URLParam(r, "groupID"),
-	}
-	newRequestUserID := dto.UserIDRequestDTO{
-		UserID: chi.URLParam(r, "userID"),
-	}
-
-	if err := trans.validate.Struct(newRequestGroupID); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Некорректный ID группы"))
+	groupID := chi.URLParam(r, "groupID")
+	userID := chi.URLParam(r, "userID")
+	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
-	if err := trans.validate.Struct(newRequestUserID); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Некорректный ID пользователя"))
+	if err := trans.validate.Struct(dto.UserIDRequestDTO{UserID: userID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID пользователя"))
 		return
 	}
 
-	// сервис добавляет юзера в группу
-	// проверка, что только креатор может добавлять админов в группы, а админ только юзеров в группы, в которых он состоит
-
+	callerID := getCallerID(r)
+	if err := trans.serv.AddUserGroupService(r.Context(), callerID, userID, groupID); err != nil {
+		tools.WriteError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 }
 
-// ====================== УДАЛИТЬ ПОЛЬЗОВАТЕЛЯ ИЗ ГРУППЫ  ==========================
-
+// DeleteUserGroupHandle удаляет пользователя из группы
 func (trans *AdminTransport) DeleteUserGroupHandle(w http.ResponseWriter, r *http.Request) {
-	newRequestGroupID := dto.GroupIDRequestDTO{
-		GroupID: chi.URLParam(r, "groupID"),
-	}
-	newRequestUserID := dto.UserIDRequestDTO{
-		UserID: chi.URLParam(r, "userID"),
-	}
-
-	if err := trans.validate.Struct(newRequestGroupID); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Некорректный ID группы"))
+	groupID := chi.URLParam(r, "groupID")
+	userID := chi.URLParam(r, "userID")
+	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
-	if err := trans.validate.Struct(newRequestUserID); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Некорректный ID пользователя"))
+	if err := trans.validate.Struct(dto.UserIDRequestDTO{UserID: userID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID пользователя"))
 		return
 	}
 
-	// сервис удаляет юзера в группу
-	// проверка, что только креатор может удалять админов из всех группы, а админ только юзеров из группы, в которых он состоит
-
+	callerID := getCallerID(r)
+	if err := trans.serv.DeleteUserGroupService(r.Context(), callerID, userID, groupID); err != nil {
+		tools.WriteError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ============================ УДАЛИТЬ ГРУППУ  ==============================
-
+// DeleteGroupHandle удаляет группу
 func (trans *AdminTransport) DeleteGroupHandle(w http.ResponseWriter, r *http.Request) {
-	newRequestGroupID := dto.GroupIDRequestDTO{
-		GroupID: chi.URLParam(r, "groupID"),
-	}
-
-	if err := trans.validate.Struct(newRequestGroupID); err != nil {
-		tools.WriteError(w, error_type.NewBadRequest("Некорректный ID группы"))
+	groupID := chi.URLParam(r, "groupID")
+	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
 
-	// сервис удаляет группу
-	// проверка, что только креатор может удалять все группы, а админ только группы, в которых он состоит
-
+	callerID := getCallerID(r)
+	if err := trans.serv.DeleteGroupService(r.Context(), callerID, groupID); err != nil {
+		tools.WriteError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
