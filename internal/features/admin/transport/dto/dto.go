@@ -19,7 +19,7 @@ type GroupResponseDTO struct {
 	GroupID     string    `json:"group_id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	MemberCount int       `json:"member_count,omitempty"`
+	MemberCount int       `json:"member_count"`
 	OwnerID     string    `json:"owner_id"`
 	CreatedAt   time.Time `json:"created_at"`
 	CanEdit     bool      `json:"can_edit"`

@@ -387,18 +387,16 @@ func (trans *AdminTransport) DeleteUserHandle(w http.ResponseWriter, r *http.Req
 
 // ====================================================== МЕТОДЫ ВЗАИМОДЕЙСТВИЯ С ГРУППАМИ ==============================================
 
-// ---------- Вспомогательные методы ----------
-
-// getCallerID извлекает callerID из контекста (установлен middleware)
-func getCallerID(r *http.Request) string {
-	id, _ := r.Context().Value("userID").(string)
-	return id
-}
-
 // ====================== ГРУППЫ ======================
 
-// CreateGroupHandle создаёт новую группу
+// создаёт новую группу
 func (trans *AdminTransport) CreateGroupHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
 	var req dto.CreateGroupRequestDTO
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		tools.WriteError(w, error_type.NewBadRequest("не удалось распарсить json"))
@@ -409,9 +407,7 @@ func (trans *AdminTransport) CreateGroupHandle(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	callerID := getCallerID(r)
-
-	group, err := trans.serv.CreateGroupService(r.Context(), callerID, req.Name, req.Description, req.OwnerID)
+	group, err := trans.serv.CreateGroupService(ctx, callerID, req.Name, req.Description, req.OwnerID)
 	if err != nil {
 		tools.WriteError(w, err)
 		return
@@ -429,16 +425,21 @@ func (trans *AdminTransport) CreateGroupHandle(w http.ResponseWriter, r *http.Re
 	tools.WriteJSON(w, http.StatusCreated, resp)
 }
 
-// GetMembersGroupHandle возвращает информацию о группе и список участников
+// возвращает информацию о группе и список участников
 func (trans *AdminTransport) GetMembersGroupHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+	
 	groupID := chi.URLParam(r, "groupID")
 	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
 		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
 
-	callerID := getCallerID(r)
-	members, group, err := trans.serv.GetMembersGroupService(r.Context(), callerID, groupID)
+	members, group, err := trans.serv.GetMembersGroupService(ctx, callerID, groupID)
 	if err != nil {
 		tools.WriteError(w, err)
 		return
@@ -469,10 +470,15 @@ func (trans *AdminTransport) GetMembersGroupHandle(w http.ResponseWriter, r *htt
 	tools.WriteJSON(w, http.StatusOK, resp)
 }
 
-// GetGroupsHandle возвращает список групп, доступных пользователю
+// возвращает список групп, доступных пользователю
 func (trans *AdminTransport) GetGroupsHandle(w http.ResponseWriter, r *http.Request) {
-	callerID := getCallerID(r)
-	groups, err := trans.serv.GetGroupsService(r.Context(), callerID)
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
+	groups, err := trans.serv.GetGroupsService(ctx, callerID)
 	if err != nil {
 		tools.WriteError(w, err)
 		return
@@ -495,8 +501,14 @@ func (trans *AdminTransport) GetGroupsHandle(w http.ResponseWriter, r *http.Requ
 	tools.WriteJSON(w, http.StatusOK, resp)
 }
 
-// EditGroupHandle изменяет название, описание или владельца группы
+// изменяет название, описание или владельца группы
 func (trans *AdminTransport) EditGroupHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
 	groupID := chi.URLParam(r, "groupID")
 	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
 		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
@@ -536,8 +548,7 @@ func (trans *AdminTransport) EditGroupHandle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	callerID := getCallerID(r)
-	updatedGroup, err := trans.serv.EditGroupService(r.Context(), callerID, groupID, updateData)
+	updatedGroup, err := trans.serv.EditGroupService(ctx, callerID, groupID, updateData)
 	if err != nil {
 		tools.WriteError(w, err)
 		return
@@ -556,8 +567,14 @@ func (trans *AdminTransport) EditGroupHandle(w http.ResponseWriter, r *http.Requ
 	tools.WriteJSON(w, http.StatusOK, resp)
 }
 
-// AddUserGroupHandle добавляет пользователя в группу
+// добавляет пользователя в группу
 func (trans *AdminTransport) AddUserGroupHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
 	groupID := chi.URLParam(r, "groupID")
 	userID := chi.URLParam(r, "userID")
 	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
@@ -569,16 +586,21 @@ func (trans *AdminTransport) AddUserGroupHandle(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	callerID := getCallerID(r)
-	if err := trans.serv.AddUserGroupService(r.Context(), callerID, userID, groupID); err != nil {
+	if err := trans.serv.AddUserGroupService(ctx, callerID, userID, groupID); err != nil {
 		tools.WriteError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
 }
 
-// DeleteUserGroupHandle удаляет пользователя из группы
+// удаляет пользователя из группы
 func (trans *AdminTransport) DeleteUserGroupHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
 	groupID := chi.URLParam(r, "groupID")
 	userID := chi.URLParam(r, "userID")
 	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
@@ -590,24 +612,28 @@ func (trans *AdminTransport) DeleteUserGroupHandle(w http.ResponseWriter, r *htt
 		return
 	}
 
-	callerID := getCallerID(r)
-	if err := trans.serv.DeleteUserGroupService(r.Context(), callerID, userID, groupID); err != nil {
+	if err := trans.serv.DeleteUserGroupService(ctx, callerID, userID, groupID); err != nil {
 		tools.WriteError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DeleteGroupHandle удаляет группу
+// удаляет группу
 func (trans *AdminTransport) DeleteGroupHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
 	groupID := chi.URLParam(r, "groupID")
 	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
 		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
 
-	callerID := getCallerID(r)
-	if err := trans.serv.DeleteGroupService(r.Context(), callerID, groupID); err != nil {
+	if err := trans.serv.DeleteGroupService(ctx, callerID, groupID); err != nil {
 		tools.WriteError(w, err)
 		return
 	}

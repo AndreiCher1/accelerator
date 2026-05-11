@@ -8,8 +8,7 @@ CREATE TABLE tasks (
     asr_model VARCHAR(50) NOT NULL,
     llm_model VARCHAR(50) NOT NULL,
     tokens INTEGER NOT NULL,
-    summary_prompt TEXT NOT NULL,
-    additional_prompt TEXT,
+    pattern_id UUID REFERENCES patterns(id), -- привязываем к шаблону промпта, которые создают админ или креатор
     file_path VARCHAR(512) NOT NULL,
     file_name VARCHAR(100) NOT NULL,
     duration INTEGER NOT NULL,

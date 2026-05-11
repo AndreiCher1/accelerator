@@ -1,6 +1,8 @@
 package domains
 
-import "time"
+import (
+	"time"
+)
 
 type Group struct {
 	GroupID     string

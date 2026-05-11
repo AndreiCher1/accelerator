@@ -189,7 +189,7 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 
 	// если админ, то не может изменять никого кроме юзеров
 	if callerUser.Role == "admin" && targetUser.Role != "user" {
-		return nil, error_type.NewNotFound("Страница не найдена") // если он сюда попал, значит как-то узнал ID админа, скрываем информацию
+		return nil, error_type.NewNotFound("пользователь не найден") // если он сюда попал, значит как-то узнал ID админа, скрываем информацию
 	}
 
 	// запрещаем менять самому себе роль ради безопасности
@@ -210,9 +210,10 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 		if err != nil {
 			return nil, err
 		}
-		if isConflict {
+		if isConflict { // не повышаем пользователя, если он состоит в группах, где назвачен админ или еще не назначен
 			return nil, error_type.NewConflict(
-				"Пользователь, которого хотят повысить до админа, уже состоит в группах, где назначен админ, либо удалите его из этих групп, либо переназначьте его админом этих групп",
+				"Пользователь состоит в группах, где нет администратора или уже назначен другой администратор. " +
+                "Назначьте его владельцем этих групп (через редактирование группы) или удалите из них перед повышением.",
 			)
 		}
 	}
@@ -225,7 +226,7 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 		}
 		if isConflict {
 			return nil, error_type.NewConflict(
-				"Пользователь, которого хотят понизить до юзера, назначен админом в одной или нескольких группах, перед удалением переназначьте админа в этих группах",
+				"Пользователь, которого хотят понизить до юзера, назначен админом в одной или нескольких группах, перед удалением переназначьте или удалите админа в этих группах",
 			)
 		}
 	}
@@ -328,7 +329,7 @@ func (serv *AdminService) DeleteUserService(ctx context.Context, callerID, targe
 
 	// если админ, то может удалять только юзеров
 	if callerUser.Role == "admin" && targetUser.Role != "user" {
-		return error_type.NewNotFound("Страница не найдена") // админ не должен видеть других админов и креатора
+		return error_type.NewNotFound("пользователь не найден") // админ не должен видеть других админов и креатора
 	}
 
 	// будет обернуто в транзакцию { !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -374,12 +375,7 @@ func (serv *AdminService) computeGroupFlags(callerRole, callerID string, group *
 //          СОЗДАНИЕ ГРУППЫ (ТОЛЬКО ДЛЯ CREATOR)
 // ======================================================
 
-// CreateGroupService создаёт новую группу.
-// Параметры:
-//   - callerID: идентификатор создателя (всегда creator)
-//   - name, description: свойства группы
-//   - ownerID: указатель на ID пользователя-админа, которого креатор назначает владельцем группы (может быть nil)
-//
+// создаёт новую группу.
 // Возвращает: созданную группу с флагами и ошибку.
 func (serv *AdminService) CreateGroupService(ctx context.Context, callerID, name, description string, ownerID *string) (*domains.Group, error) {
 	tx, err := serv.repo.BeginTx(ctx, pgx.TxOptions{})
@@ -399,6 +395,10 @@ func (serv *AdminService) CreateGroupService(ctx context.Context, callerID, name
 
 	// 2. Если передан ownerID, валидируем его
 	if ownerID != nil {
+		// проверяем, что передан корректный UUID
+		if _, err := uuid.Parse(*ownerID); err != nil {
+			return nil, error_type.NewBadRequest("некорректный UUID владельца")
+		}
 		ownerUser, err := serv.getUserByID(ctx, *ownerID)
 		if err != nil {
 			return nil, err
@@ -409,10 +409,26 @@ func (serv *AdminService) CreateGroupService(ctx context.Context, callerID, name
 	}
 
 	// 4. Создаём группу в транзакции
-	groupID, err := serv.repo.CreateGroupTx(ctx, tx, name, description, callerUser.ID, ownerID)
-	if err != nil {
-		return nil, err
+
+	// сюда передается либо nil, либо указатель на строку
+	// но в запросе нам нужно по-любому ее разыменовывать, но nil нельзя разыменовать
+	// поэтому юзаем интерфейс и в репозитории ничего не разыменовываем
+	var groupID string
+
+	if ownerID != nil {
+		// передаем строку
+		groupID, err = serv.repo.CreateGroupTx(ctx, tx, name, description, callerUser.ID, *ownerID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// иначе nil
+		groupID, err = serv.repo.CreateGroupTx(ctx, tx, name, description, callerUser.ID, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
+	
 
 	// 5. Добавляем в участники креатора и, если назначен, владельца
 	if err := serv.repo.InsertUserIntoGroupTx(ctx, tx, groupID, callerUser.ID); err != nil {
@@ -456,7 +472,7 @@ func (serv *AdminService) CreateGroupService(ctx context.Context, callerID, name
 //       ПОЛУЧЕНИЕ УЧАСТНИКОВ ГРУППЫ + ИНФО О ГРУППЕ
 // ======================================================
 
-// GetMembersGroupService возвращает список участников группы и информацию о группе с флагами.
+// возвращает список участников группы и информацию о группе с флагами.
 func (serv *AdminService) GetMembersGroupService(ctx context.Context, callerID, groupID string) (*[]domains.User, *domains.Group, error) {
 	callerUser, err := serv.getUserByID(ctx, callerID)
 	if err != nil {
@@ -501,7 +517,7 @@ func (serv *AdminService) GetMembersGroupService(ctx context.Context, callerID, 
 //          ПОЛУЧЕНИЕ ВСЕХ ГРУПП (С ФЛАГАМИ)
 // ======================================================
 
-// GetGroupsService возвращает список групп, видимых пользователю, с флагами.
+// возвращает список групп, видимых пользователю, с флагами.
 func (serv *AdminService) GetGroupsService(ctx context.Context, callerID string) (*[]domains.Group, error) {
 	callerUser, err := serv.getUserByID(ctx, callerID)
 	if err != nil {
@@ -535,9 +551,7 @@ func (serv *AdminService) GetGroupsService(ctx context.Context, callerID string)
 //                   ИЗМЕНЕНИЕ ГРУППЫ
 // ======================================================
 
-// EditGroupService изменяет свойства группы (название, описание, владельца).
-// owner_id в editInfo может присутствовать только для креатора.
-// EditGroupService изменяет свойства группы (название, описание, владельца).
+// изменяет свойства группы (название, описание, владельца).
 // owner_id в editInfo может присутствовать только для креатора.
 func (serv *AdminService) EditGroupService(ctx context.Context, callerID, groupID string, editInfo map[string]string) (*domains.Group, error) {
 	// 0. Открываем транзакцию
@@ -651,7 +665,7 @@ func (serv *AdminService) EditGroupService(ctx context.Context, callerID, groupI
 //         ДОБАВЛЕНИЕ УЧАСТНИКА В ГРУППУ
 // ======================================================
 
-// AddUserGroupService добавляет пользователя targetID в группу groupID.
+// добавляет пользователя targetID в группу groupID.
 func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, targetID, groupID string) error {
 	callerUser, err := serv.getUserByID(ctx, callerID)
 	if err != nil {
@@ -673,24 +687,15 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 	}
 	_ = groupInfo
 
-	// Если добавляемый пользователь — admin, проверяем, что в группе ещё нет админа
-	if targetUser.Role == "admin" {
-		hasAdmin, err := serv.repo.GroupHasAdmin(ctx, groupID)
-		if err != nil {
-			return err
-		}
-		if hasAdmin {
-			return error_type.NewConflict("в группе уже есть администратор")
-		}
-	}
 
+	// сначала ограничиваем доступ админу к id других пользователей
 	if callerUser.Role == "creator" {
 		// Креатор может добавить любого
 		// (дополнительно можно запретить добавлять другого creator, но creator один)
 	} else { // admin
 		// Админ может добавлять только пользователей с ролью "user"
 		if targetUser.Role != "user" {
-			return error_type.NewForbidden()
+			return error_type.NewNotFound("пользователь не найден") // скрываем, что пользователь с таким ID существует
 		}
 		// Админ должен состоять в группе
 		consists, err := serv.repo.IsUserIntoGroup(ctx, callerID, groupID)
@@ -699,6 +704,17 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 		}
 		if !consists {
 			return error_type.NewNotFound("группа не найдена")
+		}
+	}
+
+	// Если добавляемый пользователь — admin, проверяем, что в группе ещё нет админа
+	if targetUser.Role == "admin" {
+		hasAdmin, err := serv.repo.GroupHasAdmin(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		if hasAdmin {
+			return error_type.NewConflict("в группе уже есть администратор")
 		}
 	}
 
@@ -722,7 +738,7 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 //         УДАЛЕНИЕ УЧАСТНИКА ИЗ ГРУППЫ
 // ======================================================
 
-// DeleteUserGroupService удаляет пользователя targetID из группы groupID.
+// удаляет пользователя targetID из группы groupID.
 func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, targetID, groupID string) error {
 	callerUser, err := serv.getUserByID(ctx, callerID)
 	if err != nil {
@@ -748,15 +764,11 @@ func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, 
 		return err
 	}
 
-	// Проверяем, что удаляемый пользователь не является владельцем группы
-	if groupInfo.OwnerID != "" && groupInfo.OwnerID == targetID {
-		return error_type.NewConflict("нельзя удалить владельца группы. Сначала назначьте нового владельца")
-	}
-
+	// сначала проверяем, состоит ли админ в этой группе и скрываем от него админа и креатора, если он передал их ID
 	if callerUser.Role == "admin" {
 		// Админ может удалять только user
 		if targetUser.Role != "user" {
-			return error_type.NewForbidden()
+			return error_type.NewNotFound("пользователь не найден") // скрываем наличие admin и creator
 		}
 		// Админ должен состоять в группе
 		consists, err := serv.repo.IsUserIntoGroup(ctx, callerID, groupID)
@@ -767,6 +779,12 @@ func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, 
 			return error_type.NewNotFound("группа не найдена")
 		}
 	}
+
+	// Проверяем, что удаляемый пользователь не является владельцем группы
+	if groupInfo.OwnerID != "" && groupInfo.OwnerID == targetID {
+		return error_type.NewConflict("нельзя удалить владельца группы. Сначала назначьте нового владельца или удалите его")
+	}
+
 
 	// Удаляем (репозиторий проверит, что пользователь был в группе)
 	if err := serv.repo.DeleteUserFromGroup(ctx, groupID, targetID); err != nil {
@@ -779,7 +797,7 @@ func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, 
 //                УДАЛЕНИЕ ГРУППЫ
 // ======================================================
 
-// DeleteGroupService удаляет группу. Только creator может удалить любую группу.
+// удаляет группу. Только creator может удалить любую группу.
 func (serv *AdminService) DeleteGroupService(ctx context.Context, callerID, groupID string) error {
 	callerUser, err := serv.getUserByID(ctx, callerID)
 	if err != nil {
@@ -799,5 +817,10 @@ func (serv *AdminService) DeleteGroupService(ctx context.Context, callerID, grou
 	if err := serv.repo.DeleteGroup(ctx, groupID); err != nil {
 		return err
 	}
+
+	// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	// обернуть в транзакцию и удалить все задачи которые находились в группе
+
 	return nil
 }

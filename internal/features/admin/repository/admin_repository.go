@@ -4,6 +4,7 @@ import (
 	"accelerator/internal/core/error_type"
 	"accelerator/internal/domains"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -94,9 +95,9 @@ func (repo *AdminRepository) SelectUserByID(ctx context.Context, userID string) 
 // добавляет нового пользователя, если логин уникальный
 // возвращает его id
 func (repo *AdminRepository) InsertNewUser(
-		ctx context.Context, 
-		login, passwordHash, fullname, position, role string,
-	) (string, error) {
+	ctx context.Context,
+	login, passwordHash, fullname, position, role string,
+) (string, error) {
 	sqlQuery := `
 	INSERT INTO users (login, password_hash, full_name, position, role)
 	VALUES ($1, $2, $3, $4, $5)
@@ -317,93 +318,94 @@ func (repo *AdminRepository) DeleteUser(ctx context.Context, userID string) erro
 // ====================================================== МЕТОДЫ РЕПОЗИТОРИЯ ДЛЯ ГРУПП ==============================================
 
 type executor interface {
-    QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-    Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 func (repo *AdminRepository) BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error) {
-    return repo.pool.BeginTx(ctx, opts)
+	return repo.pool.BeginTx(ctx, opts)
 }
 
 // ---------------- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ----------------
 
-// SelectCreatorID возвращает ID единственного креатора
+// возвращает ID единственного креатора
 func (repo *AdminRepository) SelectCreatorID(ctx context.Context) (string, error) {
-    const query = `SELECT id FROM users WHERE role = 'creator'`
-    var creatorID string
-    err := repo.pool.QueryRow(ctx, query).Scan(&creatorID)
-    if errors.Is(err, pgx.ErrNoRows) {
-        return "", error_type.NewInternal(fmt.Errorf("creator ID not found"))
-    } else if err != nil {
-        return "", error_type.NewInternal(fmt.Errorf("select creator ID: %w", err))
-    }
-    return creatorID, nil
+	const query = `SELECT id FROM users WHERE role = 'creator'`
+	var creatorID string
+	err := repo.pool.QueryRow(ctx, query).Scan(&creatorID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", error_type.NewInternal(fmt.Errorf("creator ID not found"))
+	} else if err != nil {
+		return "", error_type.NewInternal(fmt.Errorf("select creator ID: %w", err))
+	}
+	return creatorID, nil
 }
 
 // ---------------- ГРУППЫ: СОЗДАНИЕ, ИЗМЕНЕНИЕ, УДАЛЕНИЕ ----------------
 
-// createGroup – универсальная функция для создания группы (через pool или tx)
-func (repo *AdminRepository) createGroup(ctx context.Context, e executor, name, description, createdByID string, ownerID *string) (string, error) {
-    query := `
+// универсальная функция для создания группы (через pool или tx)
+func (repo *AdminRepository) createGroup(ctx context.Context, e executor, name, description, createdByID string, ownerID any) (string, error) {
+	query := `
         INSERT INTO groups (name, description, created_by, owner_id)
         VALUES ($1, $2, $3, $4)
         RETURNING id;
     `
-    var groupID string
-    err := e.QueryRow(ctx, query, name, description, createdByID, ownerID).Scan(&groupID)
-    if err != nil {
-        return "", error_type.NewInternal(fmt.Errorf("create group: %w", err))
-    }
-    return groupID, nil
+
+	var groupID string
+	err := e.QueryRow(ctx, query, name, description, createdByID, ownerID).Scan(&groupID)
+	if err != nil {
+		return "", error_type.NewInternal(fmt.Errorf("create group: %w", err))
+	}
+	return groupID, nil
 }
 
-func (repo *AdminRepository) CreateGroup(ctx context.Context, name, description, createdByID string, ownerID *string) (string, error) {
-    return repo.createGroup(ctx, repo.pool, name, description, createdByID, ownerID)
+func (repo *AdminRepository) CreateGroup(ctx context.Context, name, description, createdByID string, ownerID any) (string, error) {
+	return repo.createGroup(ctx, repo.pool, name, description, createdByID, ownerID)
 }
 
-func (repo *AdminRepository) CreateGroupTx(ctx context.Context, tx pgx.Tx, name, description, createdByID string, ownerID *string) (string, error) {
-    return repo.createGroup(ctx, tx, name, description, createdByID, ownerID)
+func (repo *AdminRepository) CreateGroupTx(ctx context.Context, tx pgx.Tx, name, description, createdByID string, ownerID any) (string, error) {
+	return repo.createGroup(ctx, tx, name, description, createdByID, ownerID)
 }
 
-// UpdateGroupOwner меняет владельца группы (owner_id)
+// меняет владельца группы (owner_id)
 func (repo *AdminRepository) UpdateGroupOwner(ctx context.Context, groupID string, newOwnerID *string) error {
-    query := `UPDATE groups SET owner_id = $2 WHERE id = $1`
-    _, err := repo.pool.Exec(ctx, query, groupID, newOwnerID)
-    if err != nil {
-        return error_type.NewInternal(fmt.Errorf("update group owner: %w", err))
-    }
-    return nil
+	query := `UPDATE groups SET owner_id = $2 WHERE id = $1`
+	_, err := repo.pool.Exec(ctx, query, groupID, newOwnerID)
+	if err != nil {
+		return error_type.NewInternal(fmt.Errorf("update group owner: %w", err))
+	}
+	return nil
 }
 
 // ---------------- ЧЛЕНСТВО В ГРУППАХ ----------------
 
-// insertUserIntoGroup добавляет пользователя в группу
+// добавляет пользователя в группу
 func (repo *AdminRepository) insertUserIntoGroup(ctx context.Context, e executor, groupID, userID string) error {
-    query := `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)`
-    _, err := e.Exec(ctx, query, groupID, userID)
-    if err != nil {
-        return error_type.NewInternal(fmt.Errorf("add group member: %w", err))
-    }
-    return nil
+	query := `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)`
+	_, err := e.Exec(ctx, query, groupID, userID)
+	if err != nil {
+		return error_type.NewInternal(fmt.Errorf("add group member: %w", err))
+	}
+	return nil
 }
 
 func (repo *AdminRepository) InsertUserIntoGroup(ctx context.Context, groupID, userID string) error {
-    return repo.insertUserIntoGroup(ctx, repo.pool, groupID, userID)
+	return repo.insertUserIntoGroup(ctx, repo.pool, groupID, userID)
 }
 
 func (repo *AdminRepository) InsertUserIntoGroupTx(ctx context.Context, tx pgx.Tx, groupID, userID string) error {
-    return repo.insertUserIntoGroup(ctx, tx, groupID, userID)
+	return repo.insertUserIntoGroup(ctx, tx, groupID, userID)
 }
 
-// IsUserIntoGroup проверяет членство в группе = true - есть в группе
+// проверяет членство в группе = true - есть в группе
 func (repo *AdminRepository) IsUserIntoGroup(ctx context.Context, userID, groupID string) (bool, error) {
-    query := `SELECT EXISTS (SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)`
-    var exists bool
-    err := repo.pool.QueryRow(ctx, query, userID, groupID).Scan(&exists)
-    if err != nil {
-        return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
-    }
-    return exists, nil
+	query := `SELECT EXISTS (SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)`
+	var exists bool
+	err := repo.pool.QueryRow(ctx, query, userID, groupID).Scan(&exists)
+	if err != nil {
+		return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
+	}
+	return exists, nil
 }
 
 // проверяет наличие админа в группе = true - есть
@@ -416,80 +418,87 @@ func (repo *AdminRepository) GroupHasAdmin(ctx context.Context, groupID string) 
 		)
 	`
 	var exists bool
-    err := repo.pool.QueryRow(ctx, sqlQuery, groupID).Scan(&exists)
-    if err != nil {
-        return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
-    }
-    return exists, nil
+	err := repo.pool.QueryRow(ctx, sqlQuery, groupID).Scan(&exists)
+	if err != nil {
+		return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
+	}
+	return exists, nil
 }
 
 // ---------------- ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ГРУППАХ И УЧАСТНИКАХ ----------------
 
-// SelectGroupInfo возвращает информацию о группе, включая owner_id
+// возвращает информацию о группе, включая owner_id
 func (repo *AdminRepository) SelectGroupInfo(ctx context.Context, groupID string) (*domains.Group, error) {
-    query := `
+	query := `
         SELECT id, name, description, created_by, owner_id, created_at,
                (SELECT COUNT(*) - 1 FROM group_members WHERE group_id = groups.id) AS member_count
         FROM groups
         WHERE id = $1
     `
-    var g domains.Group
-    err := repo.pool.QueryRow(ctx, query, groupID).Scan(
-        &g.GroupID, &g.Name, &g.Description, &g.CreatedBy, &g.OwnerID, &g.CreatedAt, &g.MemberCount,
-    )
-    if errors.Is(err, pgx.ErrNoRows) {
-        return nil, error_type.NewNotFound("группа не найдена")
-    } else if err != nil {
-        return nil, error_type.NewInternal(fmt.Errorf("get group info: %w", err))
-    }
-    return &g, nil
+	var g domains.Group
+	var ownerID sql.NullString // чтобы считать либо null либо строку
+	err := repo.pool.QueryRow(ctx, query, groupID).Scan(
+		&g.GroupID, &g.Name, &g.Description, &g.CreatedBy, &ownerID, &g.CreatedAt, &g.MemberCount,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, error_type.NewNotFound("группа не найдена")
+	} else if err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("get group info: %w", err))
+	}
+
+	// если nil преобразует в пустую строку, чтобы в дальнейшем нигде в сервисе случайно не разыменовать указаатель на nil,
+	// если бы я хранил *string, а так я храню string и если нет, то ""
+	g.OwnerID = ownerID.String
+
+	return &g, nil
 }
 
-// SelectOnlyUsersIntoGroup – список участников с ролью 'user' для админа
+// список участников с ролью 'user' для админа
 func (repo *AdminRepository) SelectOnlyUsersIntoGroup(ctx context.Context, groupID string) (*[]domains.User, error) {
-    query := `
+	query := `
         SELECT u.id, u.login, u.full_name, u.position, u.role, gm.added_at
         FROM users u
         JOIN group_members gm ON u.id = gm.user_id
         WHERE gm.group_id = $1 AND u.role = 'user'
         ORDER BY u.full_name ASC
     `
-    return repo.fetchUsers(ctx, query, groupID)
+	return repo.fetchUsers(ctx, query, groupID)
 }
 
-// SelectUsersWithAdminFirstIntoGroup – список участников для креатора (сначала админ, потом юзеры)
+// список участников для креатора (сначала админ, потом юзеры)
 func (repo *AdminRepository) SelectUsersWithAdminFirstIntoGroup(ctx context.Context, groupID string) (*[]domains.User, error) {
-    query := `
+	query := `
         SELECT u.id, u.login, u.full_name, u.position, u.role, gm.added_at
         FROM users u
         JOIN group_members gm ON u.id = gm.user_id
         WHERE gm.group_id = $1 AND u.role != 'creator'
         ORDER BY CASE u.role WHEN 'admin' THEN 1 WHEN 'user' THEN 2 END, u.full_name ASC
     `
-    return repo.fetchUsers(ctx, query, groupID)
+	return repo.fetchUsers(ctx, query, groupID)
 }
 
 func (repo *AdminRepository) fetchUsers(ctx context.Context, query, groupID string) (*[]domains.User, error) {
-    rows, err := repo.pool.Query(ctx, query, groupID)
-    if err != nil {
-        return nil, error_type.NewInternal(fmt.Errorf("query users: %w", err))
-    }
-    defer rows.Close()
+	rows, err := repo.pool.Query(ctx, query, groupID)
+	if err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("query users: %w", err))
+	}
+	defer rows.Close()
 
-    users := make([]domains.User, 0)
-    for rows.Next() {
-        var u domains.User
-        if err := rows.Scan(&u.ID, &u.Login, &u.FullName, &u.Position, &u.Role, &u.AddedAt); err != nil {
-            return nil, error_type.NewInternal(fmt.Errorf("scan user: %w", err))
-        }
-        users = append(users, u)
-    }
-    return &users, nil
+	users := make([]domains.User, 0)
+	for rows.Next() {
+		var u domains.User
+		if err := rows.Scan(&u.ID, &u.Login, &u.FullName, &u.Position, &u.Role, &u.AddedAt); err != nil {
+			return nil, error_type.NewInternal(fmt.Errorf("scan user: %w", err))
+		}
+		users = append(users, u)
+	}
+	return &users, nil
 }
 
-// SelectGroupsForCreator – все группы для креатора (с owner_id)
+// все группы для креатора (с owner_id)
 func (repo *AdminRepository) SelectGroupsForCreator(ctx context.Context) (*[]domains.Group, error) {
-    query := `
+	query := `
         SELECT g.id, g.name, g.description, g.created_by, g.owner_id, g.created_at,
                COALESCE(COUNT(gm.user_id), 0) - 1 AS member_count
         FROM groups g
@@ -497,12 +506,12 @@ func (repo *AdminRepository) SelectGroupsForCreator(ctx context.Context) (*[]dom
         GROUP BY g.id
         ORDER BY g.name ASC
     `
-    return repo.fetchGroups(ctx, query)
+	return repo.fetchGroups(ctx, query)
 }
 
-// SelectGroupsForAdmin – группы, в которых состоит админ, с owner_id
+// группы, в которых состоит админ, с owner_id
 func (repo *AdminRepository) SelectGroupsForAdmin(ctx context.Context, adminID string) (*[]domains.Group, error) {
-    query := `
+	query := `
         SELECT g.id, g.name, g.description, g.created_by, g.owner_id, g.created_at,
                COALESCE(user_counts.cnt, 0) AS member_count
         FROM groups g
@@ -515,40 +524,45 @@ func (repo *AdminRepository) SelectGroupsForAdmin(ctx context.Context, adminID s
         ) user_counts ON g.id = user_counts.group_id
         ORDER BY g.name ASC
     `
-    return repo.fetchGroups(ctx, query, adminID)
+	return repo.fetchGroups(ctx, query, adminID)
 }
 
 func (repo *AdminRepository) fetchGroups(ctx context.Context, query string, args ...any) (*[]domains.Group, error) {
-    rows, err := repo.pool.Query(ctx, query, args...)
-    if err != nil {
-        return nil, error_type.NewInternal(fmt.Errorf("query groups: %w", err))
-    }
-    defer rows.Close()
+	rows, err := repo.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("query groups: %w", err))
+	}
+	defer rows.Close()
 
-    groups := make([]domains.Group, 0)
-    for rows.Next() {
-        var g domains.Group
-        if err := rows.Scan(&g.GroupID, &g.Name, &g.Description, &g.CreatedBy, &g.OwnerID, &g.CreatedAt, &g.MemberCount); err != nil {
-            return nil, error_type.NewInternal(fmt.Errorf("scan group: %w", err))
-        }
-        groups = append(groups, g)
-    }
-    return &groups, nil
+	groups := make([]domains.Group, 0)
+	for rows.Next() {
+		var g domains.Group
+
+		var ownerID sql.NullString // чтобы суметь прочитать NULL
+		if err := rows.Scan(&g.GroupID, &g.Name, &g.Description, &g.CreatedBy, &ownerID, &g.CreatedAt, &g.MemberCount); err != nil {
+			return nil, error_type.NewInternal(fmt.Errorf("scan group: %w", err))
+		}
+
+		g.OwnerID = ownerID.String
+
+		groups = append(groups, g)
+	}
+	return &groups, nil
 }
 
-// EditGroup – динамическое обновление полей группы (точка входа для сервиса)
+// динамическое обновление полей группы (точка входа для сервиса)
 func (repo *AdminRepository) editGroup(ctx context.Context, e executor, groupID string, editInfo map[string]string) (*domains.Group, error) {
-    // Фильтруем допустимые поля: name, description, owner_id
+	// Фильтруем допустимые поля: name, description, owner_id
 	// валидируем в хэндлере, но пусть будет на всякий
-    allowed := map[string]bool{"name": true, "description": true, "owner_id": true}
-    setClauses := make([]string, 0)
-    args := make([]any, 0)
-    i := 1
-    for field, value := range editInfo {
+	allowed := map[string]bool{"name": true, "description": true, "owner_id": true}
+	setClauses := make([]string, 0)
+	args := make([]any, 0)
+	i := 1
+	for field, value := range editInfo {
 		// проверяем на допустимость переданное поле
 		if !allowed[field] {
-            continue
-        }
+			continue
+		}
 
 		// не можем в бд добавить пустую строку в owner_id, поэтому передаем nil
 		if field == "owner_id" && value == "" {
@@ -558,35 +572,43 @@ func (repo *AdminRepository) editGroup(ctx context.Context, e executor, groupID 
 		}
 
 		// собираем массив для SET
-        setClauses = append(setClauses, fmt.Sprintf("%s = $%d", field, i))
-        i++
-    }
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", field, i))
+		i++
+	}
 	// также валидируем в хэндлере, но пусть будет
 	// если где-то ошиблись с названиями
-    if len(setClauses) == 0 {
-        // Если нет допустимых полей, возвращаем текущую информацию о группе без изменений
-        return repo.SelectGroupInfo(ctx, groupID)
-    }
+	if len(setClauses) == 0 {
+		// Если нет допустимых полей, возвращаем текущую информацию о группе без изменений
+		return repo.SelectGroupInfo(ctx, groupID)
+	}
 	// добавляем в конец ID чтобы потом распаковать
-    args = append(args, groupID)
+	args = append(args, groupID)
 
-    query := fmt.Sprintf(`
+	// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	// ---------------------------------------- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! нуждается в фиксе, админ видит количество на один больше, чем должен
+	query := fmt.Sprintf(`
         UPDATE groups SET %s
         WHERE id = $%d
         RETURNING id, name, description, created_by, owner_id, created_at,
                   (SELECT COUNT(*) - 1 FROM group_members WHERE group_id = groups.id) AS member_count
     `, strings.Join(setClauses, ", "), i)
 
-    var g domains.Group
-    err := e.QueryRow(ctx, query, args...).Scan(
-        &g.GroupID, &g.Name, &g.Description, &g.CreatedBy, &g.OwnerID, &g.CreatedAt, &g.MemberCount,
-    )
-    if errors.Is(err, pgx.ErrNoRows) {
-        return nil, error_type.NewNotFound("группа не найдена")
-    } else if err != nil {
-        return nil, error_type.NewInternal(fmt.Errorf("edit group: %w", err))
-    }
-    return &g, nil
+	var g domains.Group
+	var ownerID sql.NullString // чтобы читать NULL
+
+	err := e.QueryRow(ctx, query, args...).Scan(
+		&g.GroupID, &g.Name, &g.Description, &g.CreatedBy, &ownerID, &g.CreatedAt, &g.MemberCount,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, error_type.NewNotFound("группа не найдена")
+	} else if err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("edit group: %w", err))
+	}
+
+	g.OwnerID = ownerID.String
+
+	return &g, nil
 }
 
 func (repo *AdminRepository) EditGroup(ctx context.Context, groupID string, editInfo map[string]string) (*domains.Group, error) {
@@ -596,7 +618,6 @@ func (repo *AdminRepository) EditGroup(ctx context.Context, groupID string, edit
 func (repo *AdminRepository) EditGroupTx(ctx context.Context, e executor, groupID string, editInfo map[string]string) (*domains.Group, error) {
 	return repo.editGroup(ctx, e, groupID, editInfo)
 }
-
 
 // ------------------------ УДАЛЕНИЕ ПОЛЬЗОВАТЕЛЕЙ И ГРУПП ---------------------
 
@@ -628,7 +649,6 @@ func (repo *AdminRepository) DeleteUserFromGroupTx(ctx context.Context, e execut
 	return repo.deleteUserFromGroup(ctx, e, groupID, targetID)
 }
 
-
 // удаляет пользователя из группы, возвращает ошибку, если его нет в группе
 func (repo *AdminRepository) DeleteGroup(ctx context.Context, groupID string) error {
 	sqlQuery := `
@@ -649,69 +669,44 @@ func (repo *AdminRepository) DeleteGroup(ctx context.Context, groupID string) er
 	return nil
 }
 
-
 // ======================================================================================
 // ------------------------- МЕТОДЫ ПРОВЕРКИ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ --------------------------
 // ======================================================================================
 
-// возвращает ID групп, в которых состоит пользователь
-func (repo *AdminRepository) userGroups(ctx context.Context, userID string) ([]string, error) {
-    query := `
-        SELECT group_id
-		FROM group_members
-		WHERE user_id = $1;
-    `
-    rows, err := repo.pool.Query(ctx, query, userID)
-    if err != nil {
-        return nil, error_type.NewInternal(fmt.Errorf("query groups ID: %w", err))
-    }
-    defer rows.Close()
-
-    groupsID := make([]string, 0)
-    for rows.Next() {
-        var groupID string
-        if err := rows.Scan(&groupID); err != nil {
-            return nil, error_type.NewInternal(fmt.Errorf("scan group ID: %w", err))
-        }
-        groupsID = append(groupsID, groupID)
-    }
-    return groupsID, nil
-}
 
 
-// проверяет, если в одной из групп, в которой состоит пользователь есть админ, есго нельзя повысить 
+// проверяет, если пользователь состоит в группах, где уже назначен админ или еще не назначен
+// то мы не сможем его повысить до админа
 func (repo *AdminRepository) CheckPromoteConflict(ctx context.Context, userID string) (bool, error) {
-    // Находим группы, в которых состоит пользователь
-    // и проверяем, есть ли в каждой из них администратор
-    groups, err := repo.userGroups(ctx, userID) // вспомогательный метод
-    if err != nil {
-        return false, err
-    }
-    for _, groupID := range groups {
-        hasAdmin, err := repo.GroupHasAdmin(ctx, groupID)
-        if err != nil {
-            return false, err
-        }
-        if hasAdmin {
-            return true, nil
-        }
-    }
-    return false, nil
+	sqlQuery := `
+		SELECT EXISTS (
+			SELECT 1 FROM group_members gm
+			JOIN groups g ON g.id = gm.group_id
+			WHERE gm.user_id = $1
+			AND (g.owner_id IS NULL OR g.owner_id != $1)
+		)
+	`
+	var exists bool
+	err := repo.pool.QueryRow(ctx, sqlQuery, userID).Scan(&exists)
+	if err != nil {
+		return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
+	}
+	return exists, nil
 }
 
 // возвращает true, если удаляемый пользователь является владельцем хоть одной группы
 func (repo *AdminRepository) CheckUserIsOwnerConflict(ctx context.Context, userID string) (bool, error) {
-    query := `
+	query := `
 		SELECT EXISTS(
 			SELECT 1 FROM groups
-			WHERE owner_id = $1;
+			WHERE owner_id = $1
 		)
     `
 
-    var exists bool
-    err := repo.pool.QueryRow(ctx, query, userID).Scan(&exists)
-    if err != nil {
-        return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
-    }
-    return exists, nil
+	var exists bool
+	err := repo.pool.QueryRow(ctx, query, userID).Scan(&exists)
+	if err != nil {
+		return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
+	}
+	return exists, nil
 }
