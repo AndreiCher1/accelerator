@@ -33,6 +33,7 @@ import (
 
 // пофиксить баги admin_service 821 line 
 // пофиксить баги repository 588 line 
+// пофиксить гонку данных при добавлении админа
 
 func main() {
 	cfg := config.LoadConfig()  // загружаем .env и все его значения

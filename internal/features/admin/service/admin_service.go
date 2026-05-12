@@ -650,10 +650,15 @@ func (serv *AdminService) EditGroupService(ctx context.Context, callerID, groupI
 		return nil, err
 	}
 
-	// 6. Флаги для UI
+	// 6. для админа в методе репозитория считается в пользователях и он сам, уменьшаем на один, чтобы показывалось верное количество участников
+	if callerUser.Role == "admin" {
+		updatedGroup.MemberCount--
+	}
+
+	// 7. Флаги для UI
 	serv.computeGroupFlags(callerUser.Role, callerID, updatedGroup)
 
-	// 7. Фиксируем транзакцию
+	// 8. Фиксируем транзакцию
 	if err := tx.Commit(ctx); err != nil {
 		return nil, error_type.NewInternal(fmt.Errorf("commit tx: %w", err))
 	}
@@ -688,9 +693,15 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 	_ = groupInfo
 
 
+	
+
 	// сначала ограничиваем доступ админу к id других пользователей
 	if callerUser.Role == "creator" {
-		// Креатор может добавить любого
+		// Креатор может добавить любого, кроме админа, админ добавляется в editGroup
+		// Если добавляемый пользователь — admin, проверяем, что в группе ещё нет админа
+		if targetUser.Role == "admin" {
+			return error_type.NewBadRequest("Нельзя добавить пользователя с ролью admin в группу, назначьте администратора группы в настройках группы")
+		}
 		// (дополнительно можно запретить добавлять другого creator, но creator один)
 	} else { // admin
 		// Админ может добавлять только пользователей с ролью "user"
@@ -707,16 +718,6 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 		}
 	}
 
-	// Если добавляемый пользователь — admin, проверяем, что в группе ещё нет админа
-	if targetUser.Role == "admin" {
-		hasAdmin, err := serv.repo.GroupHasAdmin(ctx, groupID)
-		if err != nil {
-			return err
-		}
-		if hasAdmin {
-			return error_type.NewConflict("в группе уже есть администратор")
-		}
-	}
 
 	// Проверяем, не состоит ли уже в группе
 	already, err := serv.repo.IsUserIntoGroup(ctx, targetID, groupID)
