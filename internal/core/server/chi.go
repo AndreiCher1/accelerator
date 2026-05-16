@@ -61,7 +61,7 @@ func StartNewChiServer(
 				router.Put("/{groupID}", adminTrans.EditGroupHandle)
 				// Удаление группы (аналогично)
 				router.Delete("/{groupID}", adminTrans.DeleteGroupHandle)
-				// Добавление участника в группу, админ только user, креатор
+				// Добавление участника в группу, админ только user, креатор тоже
 				router.Post("/{groupID}/members/{userID}", adminTrans.AddUserGroupHandle)
 				// Удаление участника из группы
 				router.Delete("/{groupID}/members/{userID}", adminTrans.DeleteUserGroupHandle)

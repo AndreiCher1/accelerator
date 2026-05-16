@@ -726,12 +726,8 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 		}
 		// (дополнительно можно запретить добавлять другого creator, но creator один)
 	} else { // admin
-		// если админ, может добавлять в группу только user, которые есть с ним хотя бы в одной общей группе
-		ok, err := serv.repo.AreUsersInSameGroup(ctx, callerID, targetID)
-		if err != nil {
-			return err
-		}
-		if !ok {
+		// может добавлять в группу любых пользователей по их ID c ролью user
+		if targetUser.Role != "user" {
 			return error_type.NewNotFound("пользователь не найден")
 		}
 		
@@ -807,7 +803,6 @@ func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, 
 			return error_type.NewNotFound("группа не найдена")
 		}
 	} 
-	
 	// проверки для креатора
 
 	// Проверяем, что удаляемый пользователь не является владельцем группы
