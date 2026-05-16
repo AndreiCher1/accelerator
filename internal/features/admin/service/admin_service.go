@@ -76,19 +76,11 @@ func (serv *AdminService) RegisterNewUserService(ctx context.Context, callerID, 
 	if err != nil { // если пользователь не найден, возвращаем ошибку
 		return nil, "", err
 	}
-
-	// если креатор или админ, юзер не может тут ничего делать
-	if callerUser.Role != "creator" && callerUser.Role != "admin" {
+	// только креатор модеь регистрировать пользователей
+	if callerUser.Role != "creator" {
 		return nil, "", error_type.NewNotFound("Страница не найдена") // не раскрываем существование ресурса
 	}
 
-	// админ может добавлять только юзеров
-	if callerUser.Role == "admin" && role != "user" {
-		return nil, "", error_type.NewForbidden()
-	}
-
-	// если мы дошли сюда, значит мы креатор, а для него нет ограничений
-	// в роли либо user будет либо admin
 
 	// генерируем пароль
 	password, err := tools.GeneratePassword(serv.cfg)
@@ -134,7 +126,6 @@ func (serv *AdminService) GetUsersService(ctx context.Context, callerID string, 
 		return nil, 0, error_type.NewNotFound("Страница не найдена")
 	}
 
-	fmt.Println(callerUser)
 
 	var users *[]domains.User
 	var countUser int64
@@ -152,12 +143,12 @@ func (serv *AdminService) GetUsersService(ctx context.Context, callerID string, 
 	}
 
 	if callerUser.Role == "admin" {
-		// вызываем репозиторий, он возвращает всех c role=user
-		users, err = serv.repo.SelectOnlyUsers(ctx, page, limit)
+		// вызываем репозиторий, он возвращает всех c role=user, которые состоят с админом в общей группе
+		users, err = serv.repo.SelectOnlyUsersGeneralGroup(ctx, callerID, page, limit)
 		if err != nil {
 			return nil, 0, err
 		}
-		countUser, err = serv.repo.SelectCountUsers(ctx)
+		countUser, err = serv.repo.SelectCountUsersGeneralGroup(ctx, callerID)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -187,9 +178,16 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 		return nil, err
 	}
 
-	// если админ, то не может изменять никого кроме юзеров
-	if callerUser.Role == "admin" && targetUser.Role != "user" {
-		return nil, error_type.NewNotFound("пользователь не найден") // если он сюда попал, значит как-то узнал ID админа, скрываем информацию
+	// если админ, может менять только user, которые есть с ним хотя бы в одной общей группе
+	if callerUser.Role == "admin" {
+		ok, err := serv.repo.AreUsersInSameGroup(ctx, callerID, targetID)
+		if err != nil {
+			return  nil, err
+		}
+
+		if !ok {
+			return nil, error_type.NewNotFound("пользователь не найден")
+		}
 	}
 
 	// запрещаем менять самому себе роль ради безопасности
@@ -199,6 +197,11 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 
 	// админ не может менять роли
 	if callerUser.Role == "admin" && editInfo["role"] != "" { // если ключа нет, вернется по умолчанию пустая строка
+		return nil, error_type.NewForbidden()
+	}
+
+	// админ не может менять логин пользователей, только креатор
+	if callerUser.Role == "admin" && editInfo["login"] != "" {
 		return nil, error_type.NewForbidden()
 	}
 
@@ -265,9 +268,16 @@ func (serv *AdminService) ResetPasswordService(ctx context.Context, callerID, ta
 		return "", err
 	}
 
-	// если админ, то не может сбрасывать пороль никому кроме юзеров
-	if callerUser.Role == "admin" && targetUser.Role != "user" {
-		return "", error_type.NewNotFound("Страница не найдена") // значит он как-то попал на админа, скрываем информацию
+	// если админ, может сбрасывать пароль только user, которые есть с ним хотя бы в одной общей группе
+	if callerUser.Role == "admin" {
+		ok, err := serv.repo.AreUsersInSameGroup(ctx, callerID, targetID)
+		if err != nil {
+			return  "", err
+		}
+
+		if !ok {
+			return "", error_type.NewNotFound("пользователь не найден")
+		}
 	}
 
 	// креатор может всем сбрасывать
@@ -316,6 +326,18 @@ func (serv *AdminService) DeleteUserService(ctx context.Context, callerID, targe
 	targetUser, err := serv.repo.SelectUserByID(ctx, targetID)
 	if err != nil {
 		return err
+	}
+
+	// если админ, может удалять только тех user, которые есть с ним хотя бы в одной общей группе
+	if callerUser.Role == "admin" {
+		ok, err := serv.repo.AreUsersInSameGroup(ctx, callerID, targetID)
+		if err != nil {
+			return err
+		}
+
+		if !ok {
+			return error_type.NewNotFound("пользователь не найден")
+		}
 	}
 
 	// если хотят удалить пользователя, который является владельцем какой-либо группы
@@ -704,10 +726,15 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 		}
 		// (дополнительно можно запретить добавлять другого creator, но creator один)
 	} else { // admin
-		// Админ может добавлять только пользователей с ролью "user"
-		if targetUser.Role != "user" {
-			return error_type.NewNotFound("пользователь не найден") // скрываем, что пользователь с таким ID существует
+		// если админ, может добавлять в группу только user, которые есть с ним хотя бы в одной общей группе
+		ok, err := serv.repo.AreUsersInSameGroup(ctx, callerID, targetID)
+		if err != nil {
+			return err
 		}
+		if !ok {
+			return error_type.NewNotFound("пользователь не найден")
+		}
+		
 		// Админ должен состоять в группе
 		consists, err := serv.repo.IsUserIntoGroup(ctx, callerID, groupID)
 		if err != nil {
@@ -779,7 +806,9 @@ func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, 
 		if !consists {
 			return error_type.NewNotFound("группа не найдена")
 		}
-	}
+	} 
+	
+	// проверки для креатора
 
 	// Проверяем, что удаляемый пользователь не является владельцем группы
 	if groupInfo.OwnerID != "" && groupInfo.OwnerID == targetID {

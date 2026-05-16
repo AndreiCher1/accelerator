@@ -6,15 +6,18 @@ import (
 	"accelerator/internal/core/server"
 	adminRepository "accelerator/internal/features/admin/repository"
 	authRepository "accelerator/internal/features/auth/repository"
+	patternsRepository "accelerator/internal/features/patterns/repository"
 	tasksRepository "accelerator/internal/features/tasks/repository"
 	"accelerator/internal/tools"
 
 	adminService "accelerator/internal/features/admin/service"
 	authService "accelerator/internal/features/auth/service"
+	patternsService "accelerator/internal/features/patterns/service"
 	tasksService "accelerator/internal/features/tasks/service"
 
 	adminTransport "accelerator/internal/features/admin/transport"
 	authTransport "accelerator/internal/features/auth/transport"
+	patternsTransport "accelerator/internal/features/patterns/transport"
 	tasksTransport "accelerator/internal/features/tasks/transport"
 	"context"
 	"log/slog"
@@ -24,16 +27,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// что можно добавить в будущем для безопасности?
-// 2) хранение в сессии еще и fingerprint, чтобы привязывать сессию к определенному устройству чтобы обрабатывать подозрения на угон аккаунта
+// что можно добавить в будущем?
+
+// хранение в сессии еще и fingerprint, чтобы привязывать сессию к определенному устройству чтобы обрабатывать подозрения на угон аккаунта
 // мягкое удаление пользователей
 // зашить роль в токене, чтобы сразу отрезать пользователей от админки без запроса к бд, но при этом еще и отзывать токены уметь, чтобы при смене роли токен сразу отзывался, а не работал еще 15 минут
 // добавить валидацию на входе для всех исходя из ограничений базы данных
 // добавить кастомный обработчик ошибок из валидатора, чтобы ловить все все ошибки и отслыать их на клиент с разными сообщениями
 
-// пофиксить баги admin_service 821 line 
-// пофиксить баги repository 588 line 
-// пофиксить гонку данных при добавлении админа
+
+// во всех read-write методах сделать транзакции, обновить методы репозитория через executor и добавить во все SELECT запросы for update
+
+
+
+
 
 func main() {
 	cfg := config.LoadConfig()  // загружаем .env и все его значения
@@ -58,12 +65,16 @@ func main() {
 	authServ := authService.NewAuthService(authRepo, cfg) // передаем методы работы с бд в бизнес логику, возвращает методы работы бизнес логики
 	authTrans := authTransport.NewAuthTransport(authServ, validate) // передаем нашу методы из бизнес логики и созданный валидатор
 
-	TasksRepo := tasksRepository.NewTasksRepo(pool)          
-	TasksServ := tasksService.NewTasksService(TasksRepo, cfg)
-	TasksTrans := tasksTransport.NewTasksTransport(TasksServ, validate, cfg)
+	patternsRepo := patternsRepository.NewPatternsRepository(pool)          
+	patternsServ := patternsService.NewPatternsService(patternsRepo)
+	patternsTrans := patternsTransport.NewPatternsTransport(patternsServ, validate)
+
+	tasksRepo := tasksRepository.NewTasksRepo(pool)          
+	tasksServ := tasksService.NewTasksService(tasksRepo, cfg)
+	tasksTrans := tasksTransport.NewTasksTransport(tasksServ, validate, cfg)
 
 
-	if err := server.StartNewChiServer(authTrans, TasksTrans, adminTrans, cfg); err != nil {
+	if err := server.StartNewChiServer(adminTrans, authTrans, patternsTrans, tasksTrans, cfg); err != nil {
 		slog.Error("Ошибка при работе HTTP сервера:", "err", err)
 	} else {
 		slog.Info("Сервер завершился успешно")

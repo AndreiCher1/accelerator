@@ -162,43 +162,44 @@ func (repo *AdminRepository) SelectAllUsersWithAdminFirst(ctx context.Context, p
 	return &usersInfo, nil
 }
 
-// ищет пользователей по роли делающего запрос
-// возвращает список найденных пользователей user, сортированный в алфавитном порядке
-func (repo *AdminRepository) SelectOnlyUsers(ctx context.Context, page, limit int) (*[]domains.User, error) {
-	sqlQuery := `
-	SELECT id, login, full_name, position, role, created_at
-	FROM users
-	WHERE role = 'user'
-	ORDER BY full_name ASC 
-	LIMIT $2
-	OFFSET ($1 - 1) * $2;
-	`
+// возвращает список найденных пользователей user, которые состоят с админом хотя бы в одной общей группе, сортированный в алфавитном порядке
+func (repo *AdminRepository) SelectOnlyUsersGeneralGroup(ctx context.Context, callerID string, page, limit int) (*[]domains.User, error) {
+    sqlQuery := `
+        SELECT DISTINCT u.id, u.login, u.full_name, u.position, u.role, u.created_at
+        FROM users u
+        JOIN group_members gm ON gm.user_id = u.id
+        WHERE u.role = 'user'
+          AND EXISTS (
+              SELECT 1 FROM group_members gm2
+              WHERE gm2.group_id = gm.group_id
+                AND gm2.user_id = $3
+          )
+        ORDER BY u.full_name ASC
+        LIMIT $2
+        OFFSET ($1 - 1) * $2;
+    `
+    rows, err := repo.pool.Query(ctx, sqlQuery, page, limit, callerID)
+    if err != nil {
+        return nil, error_type.NewInternal(fmt.Errorf("get users info: %w", err))
+    }
+    defer rows.Close()
 
-	rows, err := repo.pool.Query(ctx, sqlQuery, page, limit)
-	if err != nil {
-		return nil, error_type.NewInternal(fmt.Errorf("get users info: %w", err))
-	}
-
-	usersInfo := make([]domains.User, 0)
-
-	for rows.Next() {
-		var userInfo domains.User
-
-		if err := rows.Scan(
-			&userInfo.ID,
-			&userInfo.Login,
-			&userInfo.FullName,
-			&userInfo.Position,
-			&userInfo.Role,
-			&userInfo.CreatedAt,
-		); err != nil {
-			return nil, error_type.NewInternal(fmt.Errorf("scan user: %w", err))
-		}
-
-		usersInfo = append(usersInfo, userInfo)
-	}
-
-	return &usersInfo, nil
+    usersInfo := make([]domains.User, 0)
+    for rows.Next() {
+        var userInfo domains.User
+        if err := rows.Scan(
+            &userInfo.ID,
+            &userInfo.Login,
+            &userInfo.FullName,
+            &userInfo.Position,
+            &userInfo.Role,
+            &userInfo.CreatedAt,
+        ); err != nil {
+            return nil, error_type.NewInternal(fmt.Errorf("scan select user for admin: %w", err))
+        }
+        usersInfo = append(usersInfo, userInfo)
+    }
+    return &usersInfo, nil
 }
 
 func (repo *AdminRepository) SelectCountUsersAndAdmins(ctx context.Context) (int64, error) {
@@ -218,21 +219,26 @@ func (repo *AdminRepository) SelectCountUsersAndAdmins(ctx context.Context) (int
 	return countUsers, nil
 }
 
-func (repo *AdminRepository) SelectCountUsers(ctx context.Context) (int64, error) {
-	sqlQuery := `
-	SELECT COUNT(*)
-    FROM users
-    WHERE role = 'user';
-	`
-
-	var countUsers int64 // из бд мы получаем 64, чтобы не обрезать при больших значениях будем получать int64
-	err := repo.pool.QueryRow(ctx, sqlQuery).Scan(&countUsers)
-
-	if err != nil {
-		return 0, error_type.NewInternal(fmt.Errorf("select count users: %w", err))
-	}
-
-	return countUsers, nil
+// возвращает количество пользователей с ролью 'user',
+// которые состоят с администратором callerID хотя бы в одной общей группе
+func (repo *AdminRepository) SelectCountUsersGeneralGroup(ctx context.Context, callerID string) (int64, error) {
+    query := `
+        SELECT COUNT(DISTINCT u.id)
+        FROM users u
+        JOIN group_members gm ON gm.user_id = u.id
+        WHERE u.role = 'user'
+          AND EXISTS (
+              SELECT 1 FROM group_members gm2
+              WHERE gm2.group_id = gm.group_id
+                AND gm2.user_id = $1
+          )
+    `
+    var count int64
+    err := repo.pool.QueryRow(ctx, query, callerID).Scan(&count)
+    if err != nil {
+        return 0, error_type.NewInternal(fmt.Errorf("count users in common groups with admin: %w", err))
+    }
+    return count, nil
 }
 
 // принимает ID и мапу с полями и значениями для изменения
@@ -584,7 +590,7 @@ func (repo *AdminRepository) editGroup(ctx context.Context, e executor, groupID 
 	// добавляем в конец ID чтобы потом распаковать
 	args = append(args, groupID)
 
-	// для админа возвращается на один больше, виксится в сервисе
+	// для админа возвращается на один меньше, так как не видит себя и креатора, фиксится в сервисе
 	query := fmt.Sprintf(`
         UPDATE groups SET %s
         WHERE id = $%d
@@ -627,7 +633,7 @@ func (repo *AdminRepository) deleteUserFromGroup(ctx context.Context, e executor
 		WHERE group_id = $1 AND user_id = $2;
 	`
 
-	result, err := repo.pool.Exec(ctx, sqlQuery, groupID, targetID)
+	result, err := e.Exec(ctx, sqlQuery, groupID, targetID)
 	if err != nil {
 		return error_type.NewInternal(fmt.Errorf("delete user into group: %w", err))
 	}
@@ -672,8 +678,6 @@ func (repo *AdminRepository) DeleteGroup(ctx context.Context, groupID string) er
 // ------------------------- МЕТОДЫ ПРОВЕРКИ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ --------------------------
 // ======================================================================================
 
-
-
 // проверяет, если пользователь состоит в группах, где уже назначен админ или еще не назначен
 // то мы не сможем его повысить до админа
 func (repo *AdminRepository) CheckPromoteConflict(ctx context.Context, userID string) (bool, error) {
@@ -708,4 +712,29 @@ func (repo *AdminRepository) CheckUserIsOwnerConflict(ctx context.Context, userI
 		return false, error_type.NewInternal(fmt.Errorf("check membership: %w", err))
 	}
 	return exists, nil
+}
+
+
+// проверяет, есть ли у callerID и targetID хотя бы одна общая группа.
+// Возвращает true, если состоят вместе хотя бы в одной группе, иначе false.
+func (repo *AdminRepository) AreUsersInSameGroup(ctx context.Context, callerID, targetID string) (bool, error) {
+    query := `
+        SELECT EXISTS (
+            SELECT 1
+            FROM group_members gm_caller
+            WHERE gm_caller.user_id = $1
+              AND EXISTS (
+                  SELECT 1
+                  FROM group_members gm_target
+                  WHERE gm_target.group_id = gm_caller.group_id
+                    AND gm_target.user_id = $2
+              )
+        )
+    `
+    var exists bool
+    err := repo.pool.QueryRow(ctx, query, callerID, targetID).Scan(&exists)
+    if err != nil {
+        return false, fmt.Errorf("check common group: %w", err)
+    }
+    return exists, nil
 }

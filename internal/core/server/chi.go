@@ -6,6 +6,7 @@ import (
 	"accelerator/internal/core/server/middleware"
 	adminTransport "accelerator/internal/features/admin/transport"
 	authTransport "accelerator/internal/features/auth/transport"
+	patternsTransport "accelerator/internal/features/patterns/transport"
 	tasksTransport "accelerator/internal/features/tasks/transport"
 	"accelerator/internal/tools"
 	"errors"
@@ -16,11 +17,13 @@ import (
 )
 
 func StartNewChiServer(
-		authTrans *authTransport.AuthTransport, 
-		tasksTrans *tasksTransport.TasksTransport, 
-		adminTrans *adminTransport.AdminTransport, 
-		cfg *config.Config,
-	) error {
+	adminTrans *adminTransport.AdminTransport,
+	authTrans *authTransport.AuthTransport,
+	patternsTrans *patternsTransport.PatternsTransport,
+	tasksTrans *tasksTransport.TasksTransport,
+
+	cfg *config.Config,
+) error {
 	router := chi.NewRouter() // используем chi, он легковесный , в нем есть встроенные обработчики переменных в паттерне и нормальный роутинг
 
 	router.Use(chiMiddleware.RequestID) // генерирует для каждого запроса уникальный ID
@@ -39,7 +42,7 @@ func StartNewChiServer(
 				// регистрация нового пользователя, креатор може всех, админ только user
 				router.Post("/", adminTrans.RegisterNewUserHandle)
 				// получить пользователей, креатор видит всех, кроме себя, админ только user
-				router.Get("/", adminTrans.GetUsersHandle) 
+				router.Get("/", adminTrans.GetUsersHandle)
 				// изменить пользователя, креатор можетменять всех и повышать user до admin, а админ может менять только user и не может менять роль
 				router.Put("/{userID}", adminTrans.EditUserHandle)
 				// сбрасывает пароль, креатор может сбросить кому угодно, кроме себя, а админ только user
@@ -58,7 +61,7 @@ func StartNewChiServer(
 				router.Put("/{groupID}", adminTrans.EditGroupHandle)
 				// Удаление группы (аналогично)
 				router.Delete("/{groupID}", adminTrans.DeleteGroupHandle)
-				// Добавление участника в группу, админ только user, креатор 
+				// Добавление участника в группу, админ только user, креатор
 				router.Post("/{groupID}/members/{userID}", adminTrans.AddUserGroupHandle)
 				// Удаление участника из группы
 				router.Delete("/{groupID}/members/{userID}", adminTrans.DeleteUserGroupHandle)
@@ -74,23 +77,41 @@ func StartNewChiServer(
 		// основная работа с задачами
 		router.Route("/tasks", func(router chi.Router) {
 			router.Use(middleware.AuthMiddleware(cfg))
+			// загрузка аудио и прочей информации для транскрибации
 			router.Post("/upload", tasksTrans.UploadHandle)
+		})
+
+		// работа с шаблонами
+		router.Route("/patterns", func(router chi.Router) {
+			router.Use(middleware.AuthMiddleware(cfg))
+			// создание шаблона
+			router.Post("/", patternsTrans.CreatePatternHandler)
+			// получение информации о шаблоне по ID
+			router.Get("/{patternID}", patternsTrans.GetPattern)
+			// получение доступных шаблонов для группы по ID
+			router.Get("/{groupID}", patternsTrans.GetGroupPatterns)
+			// получение созданных шаблонов для креатора
+			router.Get("/global", patternsTrans.GetCreatorPatterns)
+			// получение всех шаблонов по группам для креатора
+			router.Get("/all", patternsTrans.GetAllPatternsInGroups)
+			// изменение шаблона
+			router.Put("/{patternID}", patternsTrans.EditPattern)
+			// удаление шаблона
+			router.Delete("/{patternID}", patternsTrans.DeletePattern)
 		})
 
 		// работа со своим аккаунтом
 		router.Route("/users/me", func(router chi.Router) {
 			router.Use(middleware.AuthMiddleware(cfg))
+			// изменение временного пароля
 			router.Post("/change-temp-password", authTrans.ChangeTempPasswordHandle)
 		})
 	})
-
-	
 
 	// делаем кастомное сообщение, такое же как и при запрете доступа к админке, чтобы нельзя было его опознать
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
 	})
-
 
 	err := http.ListenAndServe(cfg.ServerPort, router)
 
@@ -99,5 +120,5 @@ func StartNewChiServer(
 	} else {
 		return err
 	}
-	
+
 }

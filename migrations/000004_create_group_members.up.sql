@@ -6,5 +6,3 @@ CREATE TABLE group_members (
 );
 
 CREATE INDEX idx_group_members_user_id ON group_members(user_id);
--- надо пофиксить
--- частичный уникальный индекс, не может быть больше 1 admin в группе, чтобы избежать гонки данных в AddUserGroupService между проверкой, есть ли админ и вставкой

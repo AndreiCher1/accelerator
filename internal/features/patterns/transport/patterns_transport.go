@@ -1,10 +1,15 @@
 package transport
 
 import (
-	"accelerator/internal/domains"
+	"accelerator/internal/core/error_type"
+	"accelerator/internal/core/server/authctx"
 	"accelerator/internal/features/patterns/service"
-	"context"
+	"accelerator/internal/features/patterns/transport/dto"
+	"accelerator/internal/tools"
+	"encoding/json"
+	"net/http"
 
+	"github.com/go-chi/chi"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -20,28 +25,362 @@ func NewPatternsTransport(serv *service.PatternsService, validate *validator.Val
 	}
 }
 
-// ============================== СОЗДАНИЕ НОВОГО ШАБЛОНА ==============================
-func (serv *PatternsTransport) CreatePattern(ctx context.Context, callerID, name, description, summaryPrompt, additionalPrompt string) (*domains.Pattern, error) {
+// ============================== СОЗДАНИTЕ НОВОГО ШАБЛОНА ==============================
+// POST patterns
+func (trans *PatternsTransport) CreatePatternHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
 
+	// получаем ДТО и валидируем от пользователя
+	var newRequest dto.CreatePatternRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&newRequest); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("не удалось распарсить json"))
+		return
+	}
+	if err := trans.validate.Struct(newRequest); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("ошибка во входных данных"))
+		return
+	}
+
+	// проверяем, что пришел валидный json в additional_prompt
+	if !json.Valid(newRequest.AdditionalPrompt) {
+		tools.WriteError(w, error_type.NewBadRequest("невалидный json в additional_prompt"))
+		return
+	}
+
+	// вызыв сервиса для создания шаблона
+	newPattern, err := trans.serv.CreatePatternService(
+		ctx, callerID, newRequest.GroupID, newRequest.Name, newRequest.Description, newRequest.SummaryPrompt, newRequest.SummaryPrompt,
+	)
+	if err != nil {
+		tools.WriteError(w, err)
+	}
+
+	// маппим в PatternResponseDTO и отправляем на клиент
+	newResponse := dto.PatternResponseDTO{
+		ID:               newPattern.ID,
+		GroupID:          newPattern.GroupID,
+		Name:             newPattern.Name,
+		Description:      newPattern.Description,
+		SummaryPrompt:    newPattern.SummaryPrompt,
+		AdditionalPrompt: newPattern.AdditionalPrompt,
+		CreatedAt:        newPattern.CreatedAt,
+		ChangeFlag:       newPattern.ChangeFlag,
+	}
+
+	tools.WriteJSON(w, http.StatusCreated, newResponse)
 }
 
 // ================================= ПОЛУЧЕНИЕ ШАБЛОНА =================================
-func (serv *PatternsTransport) GetPattern(ctx context.Context, callerID, patternID string) (*[]domains.Pattern, error) {
+// GET patterns/{patternID}
+func (trans *PatternsTransport) GetPattern(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+
+	// получение и валидация pattern ID
+	patternID := chi.URLParam(r, "patternID")
+	if err := trans.validate.Struct(dto.PatternIDDTO{PatternID: patternID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID шаблона"))
+		return
+	}
+
+	// получаем конкретный шаблон, если он есть, ограничиваем доступ к групповым шаблонам, если user или admin не состоят в группе
+	patternInfo, err := trans.serv.GetPattern(ctx, callerID, patternID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	newResponse := dto.PatternResponseDTO{
+		ID:               patternInfo.ID,
+		GroupID:          patternInfo.GroupID,
+		Name:             patternInfo.Name,
+		Description:      patternInfo.Description,
+		SummaryPrompt:    patternInfo.SummaryPrompt,
+		AdditionalPrompt: patternInfo.AdditionalPrompt,
+		CreatedAt:        patternInfo.CreatedAt,
+		ChangeFlag:       patternInfo.ChangeFlag,
+	}
+
+	tools.WriteJSON(w, http.StatusOK, newResponse)
 
 }
 
-// ============================== ПОЛУЧЕНИЕ ВСЕХ ШАБЛОНОВ ===============================
-func (serv *PatternsTransport) GetAllPatterns(ctx context.Context, callerID string) (*[]domains.Pattern, error) {
-	
+// ======================= ПОЛУЧЕНИЕ ВСЕХ ШАБЛОНОВ, ДОСТУПНЫХ В ГРУППЕ С ФЛАГАМИ =========================
+// GET patterns/{groupID}
+func (trans *PatternsTransport) GetGroupPatterns(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+
+	// получение и валидация group ID
+	groupID := chi.URLParam(r, "groupID")
+	if err := trans.validate.Struct(dto.PatternIDDTO{PatternID: groupID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
+		return
+	}
+
+	globalPatternsInfo, groupPatternsInfo, err := trans.serv.GetPatternsInGroupAndGlobal(ctx, callerID, groupID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим в массив дто глобальные
+	var newGlobalPatternsResponse []dto.PatternResponseDTO
+
+	for i := 0; i < len(*globalPatternsInfo); i++ {
+		newGlobalPatternResponse := dto.PatternResponseDTO{
+			ID:               (*globalPatternsInfo)[i].ID,
+			GroupID:          (*globalPatternsInfo)[i].GroupID,
+			Name:             (*globalPatternsInfo)[i].Name,
+			Description:      (*globalPatternsInfo)[i].Description,
+			SummaryPrompt:    (*globalPatternsInfo)[i].SummaryPrompt,
+			AdditionalPrompt: (*globalPatternsInfo)[i].AdditionalPrompt,
+			CreatedAt:        (*globalPatternsInfo)[i].CreatedAt,
+			ChangeFlag:       (*globalPatternsInfo)[i].ChangeFlag,
+		}
+		newGlobalPatternsResponse = append(newGlobalPatternsResponse, newGlobalPatternResponse)
+	}
+
+	// маппим в массив дто групповые
+	var newGroupPatternsResponse []dto.PatternResponseDTO
+
+	for i := 0; i < len(*groupPatternsInfo); i++ {
+		newGroupPatternResponse := dto.PatternResponseDTO{
+			ID:               (*groupPatternsInfo)[i].ID,
+			GroupID:          (*globalPatternsInfo)[i].GroupID,
+			Name:             (*groupPatternsInfo)[i].Name,
+			Description:      (*groupPatternsInfo)[i].Description,
+			SummaryPrompt:    (*groupPatternsInfo)[i].SummaryPrompt,
+			AdditionalPrompt: (*groupPatternsInfo)[i].AdditionalPrompt,
+			CreatedAt:        (*groupPatternsInfo)[i].CreatedAt,
+			ChangeFlag:       (*groupPatternsInfo)[i].ChangeFlag,
+		}
+		newGroupPatternsResponse = append(newGroupPatternsResponse, newGroupPatternResponse)
+	}
+
+	newResponse := dto.GroupPatternsResponseDTO{
+		GlobalPatterns: newGlobalPatternsResponse,
+		GroupPatterns:  newGroupPatternsResponse,
+	}
+
+	// записываем
+	tools.WriteJSON(w, http.StatusOK, newResponse)
+}
+
+// ====================== ПОЛУЧЕНИЕ СВОИХ ШАБЛОНОВ ДЛЯ КРЕАТОРА ========================
+// GET patterns/global
+func (trans *PatternsTransport) GetCreatorPatterns(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+
+	globalPatternsInfo, err := trans.serv.GetPatternsGlobal(ctx, callerID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим в массив дто глобальные
+	var newGlobalPatternsResponse []dto.PatternResponseDTO
+
+	for i := 0; i < len(*globalPatternsInfo); i++ {
+		newGlobalPatternResponse := dto.PatternResponseDTO{
+			ID:               (*globalPatternsInfo)[i].ID,
+			GroupID:          (*globalPatternsInfo)[i].GroupID,
+			Name:             (*globalPatternsInfo)[i].Name,
+			Description:      (*globalPatternsInfo)[i].Description,
+			SummaryPrompt:    (*globalPatternsInfo)[i].SummaryPrompt,
+			AdditionalPrompt: (*globalPatternsInfo)[i].AdditionalPrompt,
+			CreatedAt:        (*globalPatternsInfo)[i].CreatedAt,
+			ChangeFlag:       (*globalPatternsInfo)[i].ChangeFlag,
+		}
+		newGlobalPatternsResponse = append(newGlobalPatternsResponse, newGlobalPatternResponse)
+	}
+
+	newResponse := dto.GlobalPatternsResponseDTO{
+		GlobalPatterns: newGlobalPatternsResponse,
+	}
+
+	// записываем
+	tools.WriteJSON(w, http.StatusOK, newResponse)
+}
+
+// ================ ПОЛУЧЕНИЕ ВСЕХ ШАБЛОНОВ ДЛЯ КРЕАТОРА ПО ГРУППАМ ====================
+// GET patterns/all
+func (trans *PatternsTransport) GetAllPatternsInGroups(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+
+	allPatternsInfo, err := trans.serv.GetAllPatternsInGroups(ctx, callerID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим в массив дто глобальные
+	var newAllGroupPatternsResponse []dto.GroupWithPatternsResponse
+
+	for i := 0; i < len(*allPatternsInfo); i++ {
+		var newGroupPatternsResponse []dto.PatternResponseDTO
+
+		for j := 0; j < len(((*allPatternsInfo)[i].Patterns)); j++ {
+			newGroupPatternResponse := dto.PatternResponseDTO{
+				ID:               (*allPatternsInfo)[i].Patterns[j].ID,
+				GroupID:          (*allPatternsInfo)[i].Patterns[j].GroupID,
+				Name:             (*allPatternsInfo)[i].Patterns[j].Name,
+				Description:      (*allPatternsInfo)[i].Patterns[j].Description,
+				SummaryPrompt:    (*allPatternsInfo)[i].Patterns[j].SummaryPrompt,
+				AdditionalPrompt: (*allPatternsInfo)[i].Patterns[j].AdditionalPrompt,
+				CreatedAt:        (*allPatternsInfo)[i].Patterns[j].CreatedAt,
+				ChangeFlag:       (*allPatternsInfo)[i].Patterns[j].ChangeFlag,
+			}
+			newGroupPatternsResponse = append(newGroupPatternsResponse, newGroupPatternResponse)
+		}
+
+		newAllGroupPatternResponse := dto.GroupWithPatternsResponse{
+			GroupID:     (*allPatternsInfo)[i].GroupID,
+			Name:        (*allPatternsInfo)[i].Name,
+			Description: (*allPatternsInfo)[i].Description,
+			Patterns: newGroupPatternsResponse,
+		}
+
+		newAllGroupPatternsResponse = append(newAllGroupPatternsResponse, newAllGroupPatternResponse)
+	}
+
+	newResponse := dto.AllGroupWithPatternsResponse{
+		Groups: newAllGroupPatternsResponse,
+	}
+
+	// записываем
+	tools.WriteJSON(w, http.StatusOK, newResponse)
 }
 
 // =============================== ИЗМЕНЕНИЕ ШАБЛОНА ===================================
-func (serv *PatternsTransport) EditPattern(ctx context.Context, callerID, patternID string, editInfo map[string]string) (*domains.Pattern, error) {
+// PUT patterns/{patternID}
+func (trans *PatternsTransport) EditPattern(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
 
+	// получение и валидация pattern ID
+	patternID := chi.URLParam(r, "patternID")
+	if err := trans.validate.Struct(dto.PatternIDDTO{PatternID: patternID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID шаблона"))
+		return
+	}
+	// получаем ДТО и валидируем от пользователя
+	var newRequest dto.EditPatternRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&newRequest); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("не удалось распарсить json"))
+		return
+	}
+	if err := trans.validate.Struct(newRequest); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("ошибка во входных данных"))
+		return
+	}
+
+	// собираем только данные, которые не равны пустой строке или nil и которые нужно изменить
+	// если пустые строки, то кидаем ошибку, что поле не может быть пустым
+	updateData := make(map[string]any)
+
+	if newRequest.Name != nil {
+		if *newRequest.Name == "" {
+			tools.WriteError(w, error_type.NewBadRequest("название шаблона не может быть пустой строкой"))
+			return
+		}
+		updateData["name"] = *newRequest.Name
+	}
+	// может быть пустой строкой, ничего страшного
+	if newRequest.Description != nil {
+		updateData["description"] = *newRequest.Description
+	}
+	// Должность, а здесь проверяем
+	if newRequest.SummaryPrompt != nil {
+		if *newRequest.SummaryPrompt == "" {
+			tools.WriteError(w, error_type.NewBadRequest("промпт не может быть пустой строкой"))
+			return
+		}
+		updateData["summary_prompt"] = *newRequest.SummaryPrompt
+	}
+	// дополнительного промпта также может не быть
+	if newRequest.AdditionalPrompt != nil {
+		updateData["additional_prompt"] = *newRequest.AdditionalPrompt
+	}
+
+	// Проверка, что есть что обновлять
+	if len(updateData) == 0 {
+		tools.WriteError(w, error_type.NewBadRequest("нет ни одного переданного аргумента для изменения"))
+		return
+	}
+
+	// вызываем репозиторий, чтобы созранить изменения
+	editPattern, err := trans.serv.EditPattern(ctx, callerID, patternID, updateData)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим и отправляем на клиент
+	newResponse := dto.PatternResponseDTO{
+		ID:               editPattern.ID,
+		Name:             editPattern.Name,
+		Description:      editPattern.Description,
+		SummaryPrompt:    editPattern.SummaryPrompt,
+		AdditionalPrompt: editPattern.AdditionalPrompt,
+		CreatedAt:        editPattern.CreatedAt,
+		ChangeFlag:       editPattern.ChangeFlag,
+	}
+
+	tools.WriteJSON(w, http.StatusOK, newResponse)
 }
 
 // ============================= УДАЛЕНИЕ ШАБЛОНА =====================================
-func (serv *PatternsTransport) DeletePattern(ctx context.Context, callerID, patternID string) error {
-	// проверяем, что вызывающий пользователь это админ или креатор
+// DELETE patterns/{patternID}
+func (trans *PatternsTransport) DeletePattern(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+
+	// получение и валидация pattern ID
+	patternID := chi.URLParam(r, "patternID")
+	if err := trans.validate.Struct(dto.PatternIDDTO{PatternID: patternID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID шаблона"))
+		return
+	}
+
+	// вызываем репоиторий для удаления шаблона
+	err := trans.serv.DeletePattern(ctx, callerID, patternID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 
 }
