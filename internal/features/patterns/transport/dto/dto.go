@@ -9,8 +9,9 @@ type CreatePatternRequestDTO struct {
 	Name             string          `json:"name" validate:"required"`
 	Description      string          `json:"description" validate:"required"`
 	SummaryPrompt    string          `json:"summary_prompt" validate:"required"`
-	AdditionalPrompt json.RawMessage `json:"additional_prompt"` // будет храниться напрямую в json, если там nil, то в json будет "null"
-	GroupID          string          `json:"group_id" validate:"required"`
+	// если придет null или вообще будет не задано, то вернется пустая строка
+	AdditionalPrompt json.RawMessage `json:"additional_prompt" validate:"omitempty"` // будет храниться напрямую в json, если там nil, то в json будет "null"
+	GroupID          string          `json:"group_id" validate:"omitempty"`
 }
 
 type EditPatternRequestDTO struct {
@@ -21,7 +22,7 @@ type EditPatternRequestDTO struct {
 }
 
 type PatternIDDTO struct {
-	PatternID string `json:"pattern_id" validate:"required,uuid4"`
+	PatternID string `validate:"required,uuid4"`
 }
 
 type PatternResponseDTO struct {

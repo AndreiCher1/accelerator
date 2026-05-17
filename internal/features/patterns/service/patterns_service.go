@@ -5,6 +5,9 @@ import (
 	"accelerator/internal/domains"
 	"accelerator/internal/features/patterns/repository"
 	"context"
+	"encoding/json"
+
+	"github.com/google/uuid"
 )
 
 type PatternsService struct {
@@ -19,7 +22,7 @@ func NewPatternsService(repo *repository.PatternsRepository) *PatternsService {
 
 // --------------------------- СОЗДАНИЕ ШАБЛОНА ---------------------------
 
-func (serv *PatternsService) CreatePatternService(ctx context.Context, callerID, groupID, name, description, summaryPrompt, additionalPrompt string) (*domains.Pattern, error) {
+func (serv *PatternsService) CreatePatternService(ctx context.Context, callerID, groupID, name, description, summaryPrompt string, additionalPrompt json.RawMessage) (*domains.Pattern, error) {
 	userInfo, err := serv.repo.SelectUserByID(ctx, callerID)
 	if err != nil {
 		return nil, err
@@ -29,14 +32,45 @@ func (serv *PatternsService) CreatePatternService(ctx context.Context, callerID,
 		return nil, error_type.NewNotFound("Страница не найдена")
 	}
 
+	// если передавали группу
+	if groupID != "" {
+		// проверяем на валидность groupID, так как в транспорте он omitempty
+		if err := uuid.Validate(groupID); err != nil {
+			return nil, error_type.NewBadRequest("Невалидный UUID")
+		}
+		// проверяем группу на существование
+		_, err = serv.repo.SelectGroupInfoByID(ctx, groupID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	var patternInfo *domains.Pattern
 
-	if userInfo.Role == "creator" {
-		// он создает глобальный шаблон, который не привязан к группе
-		patternInfo, err = serv.repo.CreatePattern(ctx, name, description, summaryPrompt, additionalPrompt, callerID, nil)
-	} else {
+	if userInfo.Role == "admin" {
+		// админу нельзя создавать глобальные шаблоны
+		if groupID == "" {
+			return nil, error_type.NewBadRequest("Не передана группа для привязки шаблона")
+		}
 		// это админ, привязываем шаблон к группе
 		patternInfo, err = serv.repo.CreatePattern(ctx, name, description, summaryPrompt, additionalPrompt, callerID, groupID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// креатор создает как глобальный шаблон, так и групповой
+		if groupID == "" { // это глобальный
+			patternInfo, err = serv.repo.CreatePattern(ctx, name, description, summaryPrompt, additionalPrompt, callerID, nil)
+			if err != nil {
+				return nil, err
+			}
+		} else { // это групповой
+			patternInfo, err = serv.repo.CreatePattern(ctx, name, description, summaryPrompt, additionalPrompt, callerID, groupID)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 	}
 
 	patternInfo.ChangeFlag = true // админ или креатор могут менять созданные шаблоны
@@ -70,6 +104,9 @@ func (serv *PatternsService) GetPattern(ctx context.Context, callerID, patternID
 		if err != nil {
 			return nil, err
 		}
+		if !isConsists {
+			return nil, error_type.NewBadRequest("Шаблон не найден")
+		}
 		// если он состоит, возвращаем
 		// ставим флаги
 		if isConsists && userInfo.Role == "user" {
@@ -96,7 +133,24 @@ func (serv *PatternsService) GetPatternsInGroupAndGlobal(ctx context.Context, ca
 		return nil, nil, err
 	}
 
-	globalPatternsInfo, err := serv.repo.SelectGlobalPatterns(ctx) 
+	// проверяем группу на существование
+	_, err = serv.repo.SelectGroupInfoByID(ctx, groupID)
+	if err != nil {
+		return nil, nil, error_type.NewBadRequest("Группа не найдена")
+	}
+
+	// перед получение шаблонов, проверяем для админов и юзеров, состоят ли они в этой группе
+	if userInfo.Role == "user" || userInfo.Role == "admin" {
+		isConsists, err := serv.repo.IsUserIntoGroup(ctx, userInfo.ID, groupID)
+		if err != nil {
+			return nil, nil, err
+		} // если не состоят, пишем что группа не найден, потому что к ней у них нет доступа
+		if !isConsists {
+			return nil, nil, error_type.NewBadRequest("Группа не найдена")
+		}
+	}
+
+	globalPatternsInfo, err := serv.repo.SelectGlobalPatterns(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -108,26 +162,26 @@ func (serv *PatternsService) GetPatternsInGroupAndGlobal(ctx context.Context, ca
 
 	if userInfo.Role == "user" || userInfo.Role == "admin" {
 		for index := range *globalPatternsInfo { // глобальные они менять не могут
-			(*globalPatternsInfo)[index].ChangeFlag  = false
+			(*globalPatternsInfo)[index].ChangeFlag = false
 		}
 
 		if userInfo.Role == "user" {
 			for index := range *groupPatternsInfo { // групповые они менять не могут
-				(*groupPatternsInfo)[index].ChangeFlag  = false
+				(*groupPatternsInfo)[index].ChangeFlag = false
 			}
 		} else {
 			for index := range *groupPatternsInfo { // а админы могут
-				(*groupPatternsInfo)[index].ChangeFlag  = true
+				(*groupPatternsInfo)[index].ChangeFlag = true
 			}
 		}
 	}
 
 	// креатор может менять все
 	for index := range *globalPatternsInfo { // глобальные они менять не могут
-		(*globalPatternsInfo)[index].ChangeFlag  = true
+		(*globalPatternsInfo)[index].ChangeFlag = true
 	}
 	for index := range *groupPatternsInfo {
-		(*groupPatternsInfo)[index].ChangeFlag  = true
+		(*groupPatternsInfo)[index].ChangeFlag = true
 	}
 
 	// для креатора возвращаем любой шаблон
@@ -147,14 +201,14 @@ func (serv *PatternsService) GetPatternsGlobal(ctx context.Context, callerID str
 		return nil, error_type.NewNotFound("Страница не найдена")
 	}
 
-	globalPatternsInfo, err := serv.repo.SelectGlobalPatterns(ctx) 
+	globalPatternsInfo, err := serv.repo.SelectGlobalPatterns(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// креатор может менять все
 	for index := range *globalPatternsInfo {
-		(*globalPatternsInfo)[index].ChangeFlag  = true
+		(*globalPatternsInfo)[index].ChangeFlag = true
 	}
 
 	// для креатора возвращаем любой шаблон
@@ -173,7 +227,7 @@ func (serv *PatternsService) GetAllPatternsInGroups(ctx context.Context, callerI
 		return nil, error_type.NewNotFound("Страница не найдена")
 	}
 
-	allPatternsInfo, err := serv.repo.SelectGroupsWithPatterns(ctx) 
+	allPatternsInfo, err := serv.repo.SelectGroupsWithPatterns(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +272,10 @@ func (serv *PatternsService) EditPattern(ctx context.Context, callerID, patternI
 		isConsists, err := serv.repo.IsUserIntoGroup(ctx, userInfo.ID, patternInfo.GroupID)
 		if err != nil {
 			return nil, err
+		}
+		// если не состоит кидаем ему 404
+		if !isConsists {
+			return nil, error_type.NewNotFound("Группа не найдена")
 		}
 		// если он состоит, то изменяем шаблон
 		if isConsists {
@@ -265,6 +323,9 @@ func (serv *PatternsService) DeletePattern(ctx context.Context, callerID, patter
 		isConsists, err := serv.repo.IsUserIntoGroup(ctx, userInfo.ID, patternInfo.GroupID)
 		if err != nil {
 			return err
+		}
+		if !isConsists {
+			return error_type.NewNotFound("Группа не найдена")
 		}
 		// если он состоит, то удаляем шаблон
 		if isConsists {

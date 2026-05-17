@@ -89,7 +89,7 @@ func StartNewChiServer(
 			// получение информации о шаблоне по ID
 			router.Get("/{patternID}", patternsTrans.GetPattern)
 			// получение доступных шаблонов для группы по ID
-			router.Get("/{groupID}", patternsTrans.GetGroupPatterns)
+			router.Get("/all/{groupID}", patternsTrans.GetGroupPatterns)
 			// получение созданных шаблонов для креатора
 			router.Get("/global", patternsTrans.GetCreatorPatterns)
 			// получение всех шаблонов по группам для креатора

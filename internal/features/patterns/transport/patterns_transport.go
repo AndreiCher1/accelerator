@@ -6,10 +6,11 @@ import (
 	"accelerator/internal/features/patterns/service"
 	"accelerator/internal/features/patterns/transport/dto"
 	"accelerator/internal/tools"
+	"bytes"
 	"encoding/json"
 	"net/http"
 
-	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -27,6 +28,8 @@ func NewPatternsTransport(serv *service.PatternsService, validate *validator.Val
 
 // ============================== СОЗДАНИTЕ НОВОГО ШАБЛОНА ==============================
 // POST patterns
+// если креатор укажет group_id в дто, то он создаст локальный шаблон для группы
+// если не укажет, то он будет глобальный
 func (trans *PatternsTransport) CreatePatternHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	callerID, ok := authctx.GetUserID(ctx)
@@ -46,18 +49,40 @@ func (trans *PatternsTransport) CreatePatternHandler(w http.ResponseWriter, r *h
 		return
 	}
 
-	// проверяем, что пришел валидный json в additional_prompt
-	if !json.Valid(newRequest.AdditionalPrompt) {
-		tools.WriteError(w, error_type.NewBadRequest("невалидный json в additional_prompt"))
-		return
+	if len(newRequest.AdditionalPrompt) == 0 || bytes.Equal(bytes.TrimSpace(newRequest.AdditionalPrompt), []byte("null")) {
+		newRequest.AdditionalPrompt = nil
+	} else {
+		// если передавали, проверяем, что пришел валидный json в additional_prompt
+		var tmp interface{}
+		if err := json.Unmarshal(newRequest.AdditionalPrompt, &tmp); err != nil {
+			tools.WriteError(w, error_type.NewBadRequest("невалидный json в additional_prompt"))
+			return
+		}
+		// Разрешаем только объект или массив
+		switch v := tmp.(type) {
+		case map[string]interface{}:
+			// нормализуем пустой объект {} до nil, чтобы в бд было NULL
+			if len(v) == 0 {
+				newRequest.AdditionalPrompt = nil // пустой объект -> NULL
+			}
+		case []interface{}:
+			// нормализуем пустой объект [] до nil, чтобы в бд было NULL
+			if len(v) == 0 {
+				newRequest.AdditionalPrompt = nil // пустой массив -> NULL
+			}
+		default:
+			tools.WriteError(w, error_type.NewBadRequest("additional_prompt должен быть объектом {}, массивом [] или null"))
+			return
+		}
 	}
 
 	// вызыв сервиса для создания шаблона
 	newPattern, err := trans.serv.CreatePatternService(
-		ctx, callerID, newRequest.GroupID, newRequest.Name, newRequest.Description, newRequest.SummaryPrompt, newRequest.SummaryPrompt,
+		ctx, callerID, newRequest.GroupID, newRequest.Name, newRequest.Description, newRequest.SummaryPrompt, newRequest.AdditionalPrompt,
 	)
 	if err != nil {
 		tools.WriteError(w, err)
+		return
 	}
 
 	// маппим в PatternResponseDTO и отправляем на клиент
@@ -115,7 +140,7 @@ func (trans *PatternsTransport) GetPattern(w http.ResponseWriter, r *http.Reques
 }
 
 // ======================= ПОЛУЧЕНИЕ ВСЕХ ШАБЛОНОВ, ДОСТУПНЫХ В ГРУППЕ С ФЛАГАМИ =========================
-// GET patterns/{groupID}
+// GET patterns/all/{groupID}
 func (trans *PatternsTransport) GetGroupPatterns(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	callerID, ok := authctx.GetUserID(ctx)
@@ -160,7 +185,7 @@ func (trans *PatternsTransport) GetGroupPatterns(w http.ResponseWriter, r *http.
 	for i := 0; i < len(*groupPatternsInfo); i++ {
 		newGroupPatternResponse := dto.PatternResponseDTO{
 			ID:               (*groupPatternsInfo)[i].ID,
-			GroupID:          (*globalPatternsInfo)[i].GroupID,
+			GroupID:          (*groupPatternsInfo)[i].GroupID,
 			Name:             (*groupPatternsInfo)[i].Name,
 			Description:      (*groupPatternsInfo)[i].Description,
 			SummaryPrompt:    (*groupPatternsInfo)[i].SummaryPrompt,
@@ -261,7 +286,7 @@ func (trans *PatternsTransport) GetAllPatternsInGroups(w http.ResponseWriter, r 
 			GroupID:     (*allPatternsInfo)[i].GroupID,
 			Name:        (*allPatternsInfo)[i].Name,
 			Description: (*allPatternsInfo)[i].Description,
-			Patterns: newGroupPatternsResponse,
+			Patterns:    newGroupPatternsResponse,
 		}
 
 		newAllGroupPatternsResponse = append(newAllGroupPatternsResponse, newAllGroupPatternResponse)

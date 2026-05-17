@@ -55,16 +55,44 @@ func (repo *PatternsRepository) SelectUserByID(ctx context.Context, userID strin
 	return &userInfo, nil
 }
 
+// возвращает информацию о группе, включая owner_id
+func (repo *PatternsRepository) SelectGroupInfoByID(ctx context.Context, groupID string) (*domains.Group, error) {
+	query := `
+        SELECT id, name, description, created_by, owner_id, created_at,
+               (SELECT COUNT(*) - 1 FROM group_members WHERE group_id = groups.id) AS member_count
+        FROM groups
+        WHERE id = $1
+    `
+	var g domains.Group
+	var ownerID sql.NullString // чтобы считать либо null либо строку
+	err := repo.pool.QueryRow(ctx, query, groupID).Scan(
+		&g.GroupID, &g.Name, &g.Description, &g.CreatedBy, &ownerID, &g.CreatedAt, &g.MemberCount,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, error_type.NewNotFound("группа не найдена")
+	} else if err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("get group info: %w", err))
+	}
+
+	// если nil преобразует в пустую строку, чтобы в дальнейшем нигде в сервисе случайно не разыменовать указаатель на nil,
+	// если бы я хранил *string, а так я храню string и если нет, то ""
+	g.OwnerID = ownerID.String
+
+	return &g, nil
+}
+
 // ----------------------------- СОЗДАНИЕ ШАБЛОНОВ ------------------------------
 
 func (repo *PatternsRepository) CreatePattern(
 	ctx context.Context,
-	name, description, summaryPrompt, additionalPrompt, callerID string, groupID any,
+	name, description, summaryPrompt string, additionalPrompt json.RawMessage,
+	callerID string, groupID any,
 ) (*domains.Pattern, error) {
 	sqlQuery := `
 		INSERT INTO patterns (group_id, name, description, summary_prompt, additional_prompt, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING (id, group_id, name, description, summary_prompt, additional_prompt, created_by, created_at)
+		RETURNING id, group_id, name, description, summary_prompt, additional_prompt, created_by, created_at
 	`
 
 	var patternInfo domains.Pattern
@@ -128,7 +156,7 @@ func (repo *PatternsRepository) SelectGlobalPatterns(ctx context.Context) (*[]do
 	sqlQuery := `
 		SELECT id, group_id, name, description, summary_prompt, additional_prompt, created_by, created_at
 		FROM patterns
-		where group_id = NULL;
+		where group_id IS NULL;
 	`
 
 	return repo.fetchPatterns(ctx, sqlQuery)
@@ -162,6 +190,7 @@ func (repo *PatternsRepository) fetchPatterns(ctx context.Context, sqlQuery stri
 			&pattern.Name,
 			&pattern.Description,
 			&pattern.SummaryPrompt,
+			&pattern.AdditionalPrompt,
 			&pattern.CreatedBy,
 			&pattern.CreatedAt,
 		); err != nil {
@@ -201,7 +230,8 @@ func (r *PatternsRepository) SelectGroupsWithPatterns(ctx context.Context) (*[]d
 	}
 	defer rows.Close()
 
-	groupMap := make(map[string]domains.GroupWithPatterns)
+	// создаем мапу с указателями на структуры, чтобы удобно добавлять в оригинал мапы, а не менять локальную копию, а потом переприсваивать
+	groupMap := make(map[string]*domains.GroupWithPatterns)
 
 	for rows.Next() {
 		var (
@@ -221,17 +251,17 @@ func (r *PatternsRepository) SelectGroupsWithPatterns(ctx context.Context) (*[]d
 			return nil, error_type.NewInternal(fmt.Errorf("scan row patterns in groups: %w", err))
 		}
 
-		// Получаем или создаём запись группы
-		group, exists := groupMap[groupID]
+		// если для группы еще не создан ключ, то создаем
+		_, exists := groupMap[groupID]
 		if !exists {
-			group = domains.GroupWithPatterns{
+			groupMap[groupID] = &domains.GroupWithPatterns{
+				GroupID:     groupID, // сразу добавляем ID, чтобы потом не добавлять при конвертации в массив
 				Name:        groupName,
 				Description: groupDesc,
 				Patterns:    []domains.Pattern{},
 			}
-			groupMap[groupID] = group
 		}
-
+		
 		pattern := domains.Pattern{
 			ID:               patternID,
 			GroupID:          patternGroupID,
@@ -242,7 +272,8 @@ func (r *PatternsRepository) SelectGroupsWithPatterns(ctx context.Context) (*[]d
 			CreatedBy:        patternCreatedBy,
 			CreatedAt:        patternCreatedAt,
 		}
-		group.Patterns = append(group.Patterns, pattern)
+		// добавляем сразу в оригинал
+		groupMap[groupID].Patterns = append(groupMap[groupID].Patterns, pattern)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -250,11 +281,10 @@ func (r *PatternsRepository) SelectGroupsWithPatterns(ctx context.Context) (*[]d
 	}
 
 	// Преобразуем map в слайс
-    result := make([]domains.GroupWithPatterns, 0, len(groupMap))
-    for groupID, group := range groupMap {
-		group.GroupID = groupID
-        result = append(result, group)
-    }
+	result := make([]domains.GroupWithPatterns, 0, len(groupMap))
+	for _, group := range groupMap {
+		result = append(result, *group)
+	}
 
 	return &result, nil
 }
@@ -290,7 +320,7 @@ func (repo *PatternsRepository) EditPattern(ctx context.Context, patternID strin
 	args = append(args, patternID)
 
 	sqlQuery := fmt.Sprintf(`
-        UPDATE groups SET %s
+        UPDATE patterns SET %s
         WHERE id = $%d
         RETURNING id, group_id, name, description, summary_prompt, additional_prompt, created_by, created_at;
     `, strings.Join(setClauses, ", "), i)
@@ -326,7 +356,7 @@ func (repo *PatternsRepository) EditPattern(ctx context.Context, patternID strin
 func (repo *PatternsRepository) DeletePattern(ctx context.Context, patternID string) error {
 	sqlQuery := `
 		DELETE FROM patterns
-		WHERE group_id = $1;
+		WHERE id = $1;
 	`
 
 	result, err := repo.pool.Exec(ctx, sqlQuery, patternID)
