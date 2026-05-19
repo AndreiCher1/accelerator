@@ -1,34 +1,240 @@
 package tools
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
-
-	"github.com/tcolgate/mp3"
 )
 
-// вычисляет длительность MP3-файла в секундах
-// Возвращает длительность и возможную ошибку
-func GetDurationFromMP3(r io.Reader) (int, error) {
-	decoder := mp3.NewDecoder(r)
-	var total float64
-	var frame mp3.Frame
-	var skipped int
+// ============================================== MP3 ==================================================
+// GetDurationFromMP3 вычисляет длительность MP3-файла в секундах,
+// используя потоковый разбор фреймов без декодирования аудиоданных.
+// Принимает io.ReadSeeker, что позволяет эффективно работать с *os.File.
 
+func GetDurationFromMP3(r io.Reader) (int, error) {
+	br := bufio.NewReader(r)
+
+	// 1. Пропускаем ID3v2 (если есть)
+	if err := skipID3v2(br); err != nil {
+		return 0, fmt.Errorf("ошибка пропуска ID3v2: %w", err)
+	}
+
+	// 2. Ищем первый валидный MPEG-фрейм с ненулевым битрейтом и частотой
+	header, err := findFirstValidMPEGFrame(br)
+	if err != nil {
+		return 0, fmt.Errorf("не найден валидный MP3 фрейм: %w", err)
+	}
+
+	version := (header >> 19) & 0x3
+	sampleRateIdx := (header >> 10) & 0x3
+	sampleRate := sampleRates[version][sampleRateIdx]
+	samplesPerFrame := int64(1152)
+	if version != 3 {
+		samplesPerFrame = 576
+	}
+
+	bitrateIdx := (header >> 12) & 0xF
+	padding := (header >> 9) & 0x1
+	brValue := bitrates[version][1][bitrateIdx] * 1000
+	frameLen := int64(144*brValue)/int64(sampleRate) + int64(padding)
+
+	// Читаем оставшуюся часть первого фрейма (уже считали 4 байта заголовка)
+	firstFrameData := make([]byte, frameLen-4)
+	if _, err := io.ReadFull(br, firstFrameData); err != nil {
+		return 0, fmt.Errorf("ошибка чтения первого фрейма: %w", err)
+	}
+
+	// 3. Пытаемся извлечь общее число фреймов из Xing/Info (VBR)
+	if totalFrames := parseXing(firstFrameData); totalFrames > 0 {
+		dur := float64(totalFrames) * float64(samplesPerFrame) / float64(sampleRate)
+		return int(math.Ceil(dur)), nil
+	}
+
+	// 4. Xing отсутствует → перебираем все последующие фреймы
+	totalSamples := samplesPerFrame // первый фрейм уже учтён
 	for {
-		if err := decoder.Decode(&frame, &skipped); err != nil {
-			if err == io.EOF {
-				break // файл закончился
+		hdr, err := readFrameHeader(br)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("ошибка чтения заголовка фрейма: %w", err)
+		}
+
+		if !isValidMPEGHeader(hdr) {
+			// Пропускаем 1 байт и ищем следующий фрейм
+			if _, discardErr := br.ReadByte(); discardErr != nil {
+				if discardErr == io.EOF {
+					break
+				}
+				return 0, fmt.Errorf("ошибка при восстановлении синхронизации: %w", discardErr)
 			}
+			continue
+		}
+
+		ver := (hdr >> 19) & 0x3
+		brIdx := (hdr >> 12) & 0xF
+		srIdx := (hdr >> 10) & 0x3
+		pad := (hdr >> 9) & 0x1
+		bitrate := bitrates[ver][1][brIdx] * 1000
+		srate := sampleRates[ver][srIdx]
+
+		if bitrate == 0 || srate == 0 {
+			// Некорректный фрейм — пропускаем байт
+			if _, discardErr := br.ReadByte(); discardErr != nil {
+				if discardErr == io.EOF {
+					break
+				}
+				return 0, discardErr
+			}
+			continue
+		}
+
+		flen := int64(144*bitrate)/int64(srate) + int64(pad)
+		if _, err := io.CopyN(io.Discard, br, flen-4); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return 0, fmt.Errorf("ошибка пропуска данных фрейма: %w", err)
+		}
+
+		s := int64(1152)
+		if ver != 3 {
+			s = 576
+		}
+		totalSamples += s
+	}
+
+	if totalSamples == 0 {
+		return 0, fmt.Errorf("не найдено ни одного фрейма")
+	}
+	dur := float64(totalSamples) / float64(sampleRate)
+	return int(math.Ceil(dur)), nil
+}
+
+// ----------------- вспомогательные функции -----------------
+
+func skipID3v2(br *bufio.Reader) error {
+	peek, err := br.Peek(10)
+	if err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+	if string(peek[:3]) != "ID3" {
+		return nil
+	}
+	if _, err := io.CopyN(io.Discard, br, 10); err != nil {
+		return err
+	}
+	size := int64(peek[6])<<21 | int64(peek[7])<<14 | int64(peek[8])<<7 | int64(peek[9])
+	if _, err := io.CopyN(io.Discard, br, size); err != nil {
+		return err
+	}
+	return nil
+}
+
+// findFirstValidMPEGFrame ищет первый фрейм, у которого битрейт и частота не равны 0
+func findFirstValidMPEGFrame(br *bufio.Reader) (uint32, error) {
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
 			return 0, err
 		}
-		total += frame.Duration().Seconds()
+		if b == 0xFF {
+			next, err := br.Peek(1)
+			if err != nil {
+				return 0, err
+			}
+			if (next[0] & 0xE0) == 0xE0 {
+				headerBytes := make([]byte, 4)
+				headerBytes[0] = 0xFF
+				headerBytes[1] = next[0]
+				if _, err := io.ReadFull(br, headerBytes[2:4]); err != nil {
+					return 0, err
+				}
+				header := binary.BigEndian.Uint32(headerBytes)
+				if isValidMPEGHeader(header) {
+					// Дополнительно проверяем, что битрейт и частота не нулевые
+					version := (header >> 19) & 0x3
+					bitrateIdx := (header >> 12) & 0xF
+					sampleRateIdx := (header >> 10) & 0x3
+					if bitrates[version][1][bitrateIdx] != 0 && sampleRates[version][sampleRateIdx] != 0 {
+						return header, nil
+					}
+				}
+			}
+			// Пропускаем следующий байт, если синхрослово не подтвердилось
+			if _, err := br.ReadByte(); err != nil {
+				return 0, err
+			}
+		}
 	}
-	return int(math.Ceil(total)), nil
 }
+
+func readFrameHeader(br *bufio.Reader) (uint32, error) {
+	buf := make([]byte, 4)
+	_, err := io.ReadFull(br, buf)
+	if err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint32(buf), nil
+}
+
+func isValidMPEGHeader(h uint32) bool {
+	if (h>>21) != 0x7FF {
+		return false
+	}
+	layer := (h >> 17) & 0x3
+	if layer != 1 { // только Layer 3
+		return false
+	}
+	bitrateIdx := (h >> 12) & 0xF
+	if bitrateIdx == 0 || bitrateIdx == 15 {
+		return false
+	}
+	sampleRateIdx := (h >> 10) & 0x3
+	if sampleRateIdx == 3 {
+		return false
+	}
+	return true
+}
+
+func parseXing(data []byte) int64 {
+	idx := bytes.Index(data, []byte("Xing"))
+	if idx == -1 {
+		idx = bytes.Index(data, []byte("Info"))
+	}
+	if idx == -1 || idx+8 > len(data) {
+		return 0
+	}
+	flags := binary.BigEndian.Uint32(data[idx+4:])
+	if flags&0x1 == 0 {
+		return 0
+	}
+	return int64(binary.BigEndian.Uint32(data[idx+8:]))
+}
+
+var bitrates [4][4][16]int
+var sampleRates [4][4]int
+
+func init() {
+	// MPEG1 Layer 3
+	bitrates[3][1] = [16]int{0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0}
+	// MPEG2/2.5 Layer 3
+	bitrates[2][1] = [16]int{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0}
+	bitrates[0][1] = [16]int{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0}
+
+	sampleRates[3] = [4]int{44100, 48000, 32000, 0}
+	sampleRates[2] = [4]int{22050, 24000, 16000, 0}
+	sampleRates[0] = [4]int{11025, 12000, 8000, 0}
+}
+
+// ============================================== WAV ==================================================
 
 // пиздец как будто на ассемблере пишу, что за говно
 // вычисляет длительность WAV-файла в секундах
@@ -132,9 +338,6 @@ func GetDurationFromWAV(r io.Reader) (int, error) {
 	}
 }
 
-
-
-
 // readLittleEndianInt64 читает 8-байтовое целое число в формате Little Endian.
 // используется для чтения granule position из заголовка OggS.
 func readLittleEndianInt64(data []byte) (int64, error) {
@@ -157,204 +360,306 @@ func readLittleEndianInt32(data []byte) (int32, error) {
 	return value, err
 }
 
-// GetDurationFromOGG рассчитывает длительность OGG Vorbis/Opus файла из io.Reader.
+// ============================================== OGG/Opus ==================================================
+
+// GetDurationFromOGG вычисляет длительность OGG Vorbis/Opus файла, читая поток последовательно.
+// Не загружает весь файл в память – подходит для файлов любого размера.
 func GetDurationFromOGG(r io.Reader) (int, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return 0, fmt.Errorf("ошибка чтения OGG потока: %w", err)
-	}
-
-	// --- Извлечение частоты дискретизации (Sample Rate) ---
 	var sampleRate int32
-	// Для Opus частота всегда 48000 Гц. Мы попытаемся найти заголовок Vorbis,
-	// а если не получится — будем считать, что это Opus.
 	foundVorbis := false
-	oggMagic := []byte("OggS")
-	vorbisMagic := []byte("vorbis")
+	var lastGranule int64
+	haveGranule := false
 
-	for i := 0; i < len(data)-len(vorbisMagic); i++ {
-		if bytes.HasPrefix(data[i:], vorbisMagic) {
-			// Найден магический маркер "vorbis" внутри идентификационного пакета
-			if i+16 > len(data) {
-				break
-			}
-			rate, err := readLittleEndianInt32(data[i+11 : i+15])
-			if err == nil && rate > 0 {
-				sampleRate = rate
-				foundVorbis = true
-			}
+	// буфер для минимального заголовка OGG-страницы (27 байт)
+	headerBuf := make([]byte, 27)
+
+	for {
+		// читаем заголовок страницы
+		_, err := io.ReadFull(r, headerBuf)
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("ошибка чтения OGG заголовка: %w", err)
+		}
+
+		// проверяем сигнатуру "OggS"
+		if string(headerBuf[:4]) != "OggS" {
+			return 0, fmt.Errorf("ожидалась OGG-страница")
+		}
+		version := headerBuf[4]
+		if version != 0 {
+			return 0, fmt.Errorf("неподдерживаемая версия OGG: %d", version)
+		}
+
+		headerType := headerBuf[5]
+		granulePos := int64(binary.LittleEndian.Uint64(headerBuf[6:14]))
+		pageSegments := int(headerBuf[26])
+
+		// читаем таблицу сегментов
+		segTable := make([]byte, pageSegments)
+		if _, err := io.ReadFull(r, segTable); err != nil {
+			return 0, fmt.Errorf("ошибка чтения таблицы сегментов: %w", err)
+		}
+
+		// вычисляем общий размер данных страницы
+		var dataSize int64
+		for _, segLen := range segTable {
+			dataSize += int64(segLen)
+		}
+
+		// если это первая страница (BOS) и мы ещё не определили sample rate – пробуем извлечь его из Vorbis
+		if (headerType&0x02) != 0 && !foundVorbis {
+			if dataSize > 0 {
+				// читаем начало данных, чтобы проверить кодек
+				probeSize := dataSize
+				if probeSize > 64 {
+					probeSize = 64
+				}
+				probe := make([]byte, probeSize)
+				if _, err := io.ReadFull(r, probe); err != nil {
+					return 0, fmt.Errorf("ошибка чтения первой страницы: %w", err)
+				}
+				dataSize -= int64(len(probe))
+
+				// идентификационный пакет Vorbis: packet_type (1 байт = 1), затем "vorbis"
+				if len(probe) >= 1 && probe[0] == 0x01 {
+					if len(probe) >= 7 && string(probe[1:7]) == "vorbis" {
+						// после packet_type + "vorbis" (7 байт) + 4 байта версии + 1 байт каналов -> 12 байт от начала,
+						// далее 4 байта sample rate (LE)
+						if len(probe) >= 12+4 {
+							sampleRate = int32(binary.LittleEndian.Uint32(probe[12:16]))
+							foundVorbis = true
+						}
+					}
+				}
+				// дочитываем оставшиеся данные этой страницы
+				if dataSize > 0 {
+					if _, err := io.CopyN(io.Discard, r, dataSize); err != nil {
+						return 0, fmt.Errorf("ошибка пропуска данных страницы: %w", err)
+					}
+				}
+			}
+		} else {
+			// не первая страница или sample rate уже известен – просто пропускаем данные
+			if dataSize > 0 {
+				if _, err := io.CopyN(io.Discard, r, dataSize); err != nil {
+					return 0, fmt.Errorf("ошибка пропуска данных страницы: %w", err)
+				}
+			}
+		}
+
+		// обновляем последнюю валидную granule позицию
+		if granulePos > 0 {
+			lastGranule = granulePos
+			haveGranule = true
 		}
 	}
 
+	if !haveGranule {
+		return 0, fmt.Errorf("не найдена granule position в OGG файле")
+	}
 	if !foundVorbis {
-		// Если маркер Vorbis не найден, предполагаем Opus
-		sampleRate = 48000
+		sampleRate = 48000 // Opus (или неизвестный кодек) по умолчанию 48000 Гц
+	}
+	if sampleRate <= 0 {
+		return 0, fmt.Errorf("некорректная частота дискретизации: %d", sampleRate)
 	}
 
-	// --- Извлечение общего количества сэмплов (Granule Position) ---
-	var granulePosition int64
-	// Ищем последний заголовок "OggS" в данных
-	for i := len(data) - len(oggMagic) - 14; i >= 0; i-- {
-		if bytes.HasPrefix(data[i:], oggMagic) {
-			if i+14 > len(data) {
-				continue
-			}
-			pos, err := readLittleEndianInt64(data[i+6 : i+14])
-			if err == nil && pos > 0 {
-				granulePosition = pos
-			}
-			break
-		}
-	}
-
-	if granulePosition <= 0 || sampleRate <= 0 {
-		return 0, fmt.Errorf("не удалось найти необходимую информацию в OGG файле")
-	}
-
-	// Расчет длительности
-	duration := float64(granulePosition) / float64(sampleRate)
+	duration := float64(lastGranule) / float64(sampleRate)
 	return int(math.Ceil(duration)), nil
 }
 
-
-
-
-
-
+// ============================================== AAC ==================================================
 func GetDurationFromAAC(reader io.Reader) (int, error) {
-    data, err := io.ReadAll(reader)
-    if err != nil {
-        return 0, err
-    }
-    if len(data) < 7 {
-        return 0, fmt.Errorf("некорректный AAC файл: недостаточно данных")
-    }
+	br := bufio.NewReader(reader)
 
-    var sampleRate int
-    var totalSamples int64
-    frameCount := 0
+	var totalSamples int64
+	var sampleRate int
+	firstFrame := true
 
-    pos := 0
-    for pos+7 <= len(data) {
-        syncWord := (uint16(data[pos]) << 4) | (uint16(data[pos+1]) >> 4)
-        if syncWord != 0xFFF {
-            break
-        }
+	for {
+		sr, _, err := readADTSFrame(br, firstFrame)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("ошибка чтения AAC фрейма: %w", err)
+		}
+		if firstFrame {
+			sampleRate = sr
+			firstFrame = false
+		}
+		totalSamples += 1024
+	}
 
+	if sampleRate == 0 || totalSamples == 0 {
+		return 0, fmt.Errorf("не удалось определить длительность AAC")
+	}
 
-        // Извлекаем частоту дискретизации
-        samplingFreqIndex := (data[pos+2] >> 2) & 0xF
-        if frameCount == 0 {
-            switch samplingFreqIndex {
-            case 0:
-                sampleRate = 96000
-            case 1:
-                sampleRate = 88200
-            case 2:
-                sampleRate = 64000
-            case 3:
-                sampleRate = 48000
-            case 4:
-                sampleRate = 44100
-            case 5:
-                sampleRate = 32000
-            case 6:
-                sampleRate = 24000
-            case 7:
-                sampleRate = 22050
-            case 8:
-                sampleRate = 16000
-            case 9:
-                sampleRate = 12000
-            case 10:
-                sampleRate = 11025
-            case 11:
-                sampleRate = 8000
-            case 12:
-                sampleRate = 7350
-            default:
-                sampleRate = 44100 // Значение по умолчанию
-            }
-        }
-
-        // Извлекаем длину фрейма
-        frameLength := uint16(data[pos+3]&0x3)<<11 | uint16(data[pos+4])<<3 | uint16(data[pos+5])>>5
-
-        if frameLength < 7 {
-            break
-        }
-
-        totalSamples += 1024 // Каждый AAC фрейм содержит 1024 сэмпла
-        frameCount++
-
-        pos += int(frameLength)
-        if pos >= len(data) {
-            break
-        }
-    }
-
-    if frameCount == 0 || sampleRate == 0 {
-        return 0, fmt.Errorf("не удалось определить длительность: не найдено ни одного фрейма")
-    }
-
-    duration := float64(totalSamples) / float64(sampleRate)
-    return int(math.Ceil(duration)), nil
+	duration := float64(totalSamples) / float64(sampleRate)
+	return int(math.Ceil(duration)), nil
 }
 
+// readADTSFrame находит следующий ADTS-фрейм, читает его заголовок,
+// пропускает аудиоданные и возвращает:
+// - sampleRate (только для firstFrame)
+// - длину фрейма
+// - ошибку (io.EOF при конце файла)
+func readADTSFrame(br *bufio.Reader, firstFrame bool) (int, int, error) {
+	// Поиск синхрослова 0xFFF без использования UnreadByte/Peek
+	var header [7]byte
+	for {
+		// Читаем первый байт синхрослова
+		b, err := br.ReadByte()
+		if err != nil {
+			return 0, 0, err
+		}
+		if b != 0xFF {
+			continue
+		}
 
+		// Читаем второй байт
+		next, err := br.ReadByte()
+		if err != nil {
+			return 0, 0, err
+		}
+		// Проверяем: старшие 4 бита = 0xF, layer (биты 1,2) == 0
+		if (next&0xF0) == 0xF0 && (next&0x06) == 0 {
+			// Нашли синхрослово, сохраняем два первых байта заголовка
+			header[0] = 0xFF
+			header[1] = next
+			// Дочитываем оставшиеся 5 байт заголовка
+			if _, err := io.ReadFull(br, header[2:7]); err != nil {
+				if err == io.EOF || err == io.ErrUnexpectedEOF {
+					return 0, 0, io.EOF
+				}
+				return 0, 0, err
+			}
+			break
+		}
+		// Иначе продолжаем поиск с текущей позиции (после next)
+	}
 
+	// Проверяем заголовок
+	if header[0] != 0xFF || (header[1]&0xF0) != 0xF0 || (header[1]&0x06) != 0 {
+		return 0, 0, fmt.Errorf("не ADTS фрейм")
+	}
+
+	protectionAbsent := (header[1] & 0x01) == 1
+	samplingFreqIndex := (header[2] >> 2) & 0x0F
+	frameLength := (uint16(header[3])&0x03)<<11 | uint16(header[4])<<3 | uint16(header[5])>>5
+
+	if samplingFreqIndex == 15 {
+		return 0, 0, fmt.Errorf("невалидный индекс частоты дискретизации")
+	}
+	if frameLength < 7 {
+		return 0, 0, fmt.Errorf("длина фрейма < 7")
+	}
+
+	// Определяем размер заголовка (7 или 9 байт)
+	headerSize := 7
+	if !protectionAbsent {
+		crc := make([]byte, 2)
+		if _, err := io.ReadFull(br, crc); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				return 0, 0, io.EOF
+			}
+			return 0, 0, err
+		}
+		headerSize = 9
+	}
+
+	// Пропускаем аудиоданные
+	skipSize := int64(frameLength) - int64(headerSize)
+	if skipSize > 0 {
+		if _, err := io.CopyN(io.Discard, br, skipSize); err != nil {
+			if err == io.EOF {
+				return 0, 0, io.EOF
+			}
+			return 0, 0, err
+		}
+	}
+
+	// Частота дискретизации для первого фрейма
+	var sr int
+	if firstFrame {
+		sr = aacSampleRate(samplingFreqIndex)
+	}
+	return sr, int(frameLength), nil
+}
+
+func aacSampleRate(idx byte) int {
+	switch idx {
+	case 0: return 96000
+	case 1: return 88200
+	case 2: return 64000
+	case 3: return 48000
+	case 4: return 44100
+	case 5: return 32000
+	case 6: return 24000
+	case 7: return 22050
+	case 8: return 16000
+	case 9: return 12000
+	case 10: return 11025
+	case 11: return 8000
+	case 12: return 7350
+	default: return 44100
+	}
+}
+
+// ============================================== FLAC ==================================================
 
 func GetDurationFromFLAC(reader io.Reader) (int, error) {
-    // Читаем заголовок "fLaC"
-    header := make([]byte, 4)
-    if _, err := io.ReadFull(reader, header); err != nil {
-        return 0, fmt.Errorf("ошибка чтения FLAC заголовка: %w", err)
-    }
-    if string(header) != "fLaC" {
-        return 0, fmt.Errorf("некорректный FLAC файл: заголовок не fLaC")
-    }
+	// Читаем заголовок "fLaC"
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return 0, fmt.Errorf("ошибка чтения FLAC заголовка: %w", err)
+	}
+	if string(header) != "fLaC" {
+		return 0, fmt.Errorf("некорректный FLAC файл: заголовок не fLaC")
+	}
 
-    // Читаем первый метаданных-блок (всегда StreamInfo)
-    metaHeader := make([]byte, 4)
-    if _, err := io.ReadFull(reader, metaHeader); err != nil {
-        return 0, fmt.Errorf("ошибка чтения заголовка метаданных: %w", err)
-    }
+	// Читаем первый метаданных-блок (всегда StreamInfo)
+	metaHeader := make([]byte, 4)
+	if _, err := io.ReadFull(reader, metaHeader); err != nil {
+		return 0, fmt.Errorf("ошибка чтения заголовка метаданных: %w", err)
+	}
 
-    blockType := metaHeader[0] & 0x7F
-    if blockType != 0 {
-        return 0, fmt.Errorf("первый блок не StreamInfo")
-    }
+	blockType := metaHeader[0] & 0x7F
+	if blockType != 0 {
+		return 0, fmt.Errorf("первый блок не StreamInfo")
+	}
 
-    blockLength := int(metaHeader[1])<<16 | int(metaHeader[2])<<8 | int(metaHeader[3])
-    if blockLength < 34 { // StreamInfo всегда 34 байта
-        return 0, fmt.Errorf("блок StreamInfo поврежден")
-    }
+	blockLength := int(metaHeader[1])<<16 | int(metaHeader[2])<<8 | int(metaHeader[3])
+	if blockLength < 34 { // StreamInfo всегда 34 байта
+		return 0, fmt.Errorf("блок StreamInfo поврежден")
+	}
 
-    // Читаем 18 байт StreamInfo — этого хватит для sample rate и total samples
-    streamInfo := make([]byte, 18)
-    if _, err := io.ReadFull(reader, streamInfo); err != nil {
-        return 0, fmt.Errorf("ошибка чтения StreamInfo: %w", err)
-    }
+	// Читаем 18 байт StreamInfo — этого хватит для sample rate и total samples
+	streamInfo := make([]byte, 18)
+	if _, err := io.ReadFull(reader, streamInfo); err != nil {
+		return 0, fmt.Errorf("ошибка чтения StreamInfo: %w", err)
+	}
 
-    // Частота дискретизации (20 бит, big‑endian)
-    // Старшие 8 бит в streamInfo[10], средние 8 бит в streamInfo[11],
-    // младшие 4 бита в streamInfo[12] (старшие биты байта)
-    sampleRate := int(streamInfo[10])<<12 | int(streamInfo[11])<<4 | int(streamInfo[12])>>4
+	// Частота дискретизации (20 бит, big‑endian)
+	// Старшие 8 бит в streamInfo[10], средние 8 бит в streamInfo[11],
+	// младшие 4 бита в streamInfo[12] (старшие биты байта)
+	sampleRate := int(streamInfo[10])<<12 | int(streamInfo[11])<<4 | int(streamInfo[12])>>4
 
-    // Общее количество сэмплов (36 бит)
-    // Старшие 4 бита — в младших битах streamInfo[13],
-    // остальные 32 бита — в streamInfo[14..17] (big‑endian)
-    totalSamples := int64(streamInfo[13]&0x0F) << 32
-    totalSamples |= int64(streamInfo[14]) << 24
-    totalSamples |= int64(streamInfo[15]) << 16
-    totalSamples |= int64(streamInfo[16]) << 8
-    totalSamples |= int64(streamInfo[17])
+	// Общее количество сэмплов (36 бит)
+	// Старшие 4 бита — в младших битах streamInfo[13],
+	// остальные 32 бита — в streamInfo[14..17] (big‑endian)
+	totalSamples := int64(streamInfo[13]&0x0F) << 32
+	totalSamples |= int64(streamInfo[14]) << 24
+	totalSamples |= int64(streamInfo[15]) << 16
+	totalSamples |= int64(streamInfo[16]) << 8
+	totalSamples |= int64(streamInfo[17])
 
-    if sampleRate == 0 {
-        return 0, fmt.Errorf("некорректная частота дискретизации")
-    }
+	if sampleRate == 0 {
+		return 0, fmt.Errorf("некорректная частота дискретизации")
+	}
 
-    duration := float64(totalSamples) / float64(sampleRate)
-    return int(math.Ceil(duration)), nil
+	duration := float64(totalSamples) / float64(sampleRate)
+	return int(math.Ceil(duration)), nil
 }

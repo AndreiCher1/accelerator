@@ -4,11 +4,13 @@ import (
 	"accelerator/internal/core/config"
 	"accelerator/internal/core/logger"
 	"accelerator/internal/core/server"
+	"accelerator/internal/core/storage"
 	adminRepository "accelerator/internal/features/admin/repository"
 	authRepository "accelerator/internal/features/auth/repository"
 	patternsRepository "accelerator/internal/features/patterns/repository"
 	tasksRepository "accelerator/internal/features/tasks/repository"
 	"accelerator/internal/tools"
+	"fmt"
 
 	adminService "accelerator/internal/features/admin/service"
 	authService "accelerator/internal/features/auth/service"
@@ -35,24 +37,33 @@ import (
 // добавить валидацию на входе для всех исходя из ограничений базы данных
 // добавить кастомный обработчик ошибок из валидатора, чтобы ловить все все ошибки и отслыать их на клиент с разными сообщениями
 
-
 // во всех read-write методах сделать транзакции, обновить методы репозитория через executor и добавить во все SELECT запросы for update
 
-
-
-
-
 func main() {
-	cfg := config.LoadConfig()  // загружаем .env и все его значения
-	
-	logger.InitLog()            // инициализируем логер, чтобы нормально записывать в файл
-	
+	cfg := config.LoadConfig() // загружаем .env и все его значения
+
+	// инициализируем логер, чтобы нормально записывать в файл
+	if err := logger.InitLog(); err != nil {
+		fmt.Println(err)
+	}
+
 	validate := validator.New() // создаем валидатор, чтобы потом передать в хэндлеры
 	validate.RegisterValidation("fio", tools.ValidateFio)
 
+	// иницианизируем клиент s3 хранилища
+	minioClient, err := storage.NewMinIOClient(
+		cfg.MinioEndpoint,
+		cfg.MinioAccessKey,
+		cfg.MinioSecretKey,
+		cfg.MinioBucket,
+		cfg.MinioSSL,
+	)
+	if err != nil {
+		slog.Error("Ошибка при инициализации клиента minio:", "err", err)
+	}
 
 	pool, err := pgxpool.New(context.Background(), cfg.DBDSN) // создаем пул соединений
-	defer func() { pool.Close() }() // перед завершением работы закрываем соединение с базой данных
+	defer func() { pool.Close() }()                           // перед завершением работы закрываем соединение с базой данных
 	if err != nil {
 		slog.Error("Не удалось создать пул соединений с базой данных:", "err", err)
 	}
@@ -61,18 +72,19 @@ func main() {
 	adminServ := adminService.NewAdminService(adminRepo, cfg)
 	adminTrans := adminTransport.NewAdminTransport(adminServ, validate)
 
-	authRepo := authRepository.NewAuthRepo(pool)          // возвращает указатель на репозиторий с указателем на подключение к базе данных и соответсвенно методы работы с бд
-	authServ := authService.NewAuthService(authRepo, cfg) // передаем методы работы с бд в бизнес логику, возвращает методы работы бизнес логики
+	authRepo := authRepository.NewAuthRepo(pool)                    // возвращает указатель на репозиторий с указателем на подключение к базе данных и соответсвенно методы работы с бд
+	authServ := authService.NewAuthService(authRepo, cfg)           // передаем методы работы с бд в бизнес логику, возвращает методы работы бизнес логики
 	authTrans := authTransport.NewAuthTransport(authServ, validate) // передаем нашу методы из бизнес логики и созданный валидатор
 
-	patternsRepo := patternsRepository.NewPatternsRepository(pool)          
+	patternsRepo := patternsRepository.NewPatternsRepository(pool)
 	patternsServ := patternsService.NewPatternsService(patternsRepo)
 	patternsTrans := patternsTransport.NewPatternsTransport(patternsServ, validate)
 
-	tasksRepo := tasksRepository.NewTasksRepo(pool)          
-	tasksServ := tasksService.NewTasksService(tasksRepo, cfg)
-	tasksTrans := tasksTransport.NewTasksTransport(tasksServ, validate, cfg)
-
+	tasksRepo := tasksRepository.NewTasksRepo(pool)
+	tasksServ := tasksService.NewTasksService(tasksRepo, minioClient, cfg)
+	// создаем семафор для хэндлера загрузки
+	uploadChanWorkers := make(chan struct{}, cfg.MaxUploadWorkers)
+	tasksTrans := tasksTransport.NewTasksTransport(tasksServ, minioClient, uploadChanWorkers, validate, cfg)
 
 	if err := server.StartNewChiServer(adminTrans, authTrans, patternsTrans, tasksTrans, cfg); err != nil {
 		slog.Error("Ошибка при работе HTTP сервера:", "err", err)

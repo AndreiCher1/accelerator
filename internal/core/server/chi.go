@@ -78,7 +78,7 @@ func StartNewChiServer(
 		router.Route("/tasks", func(router chi.Router) {
 			router.Use(middleware.AuthMiddleware(cfg))
 			// загрузка аудио и прочей информации для транскрибации
-			router.Post("/upload", tasksTrans.UploadHandle)
+			router.Post("/upload/{groupID}", tasksTrans.UploadHandle)
 		})
 
 		// работа с шаблонами

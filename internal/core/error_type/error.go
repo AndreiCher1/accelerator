@@ -61,6 +61,13 @@ func NewInternal(err error) *HTTPError {
 	}
 }
 
+func NewServiceUnavailable(msg string) *HTTPError {
+	return &HTTPError{
+		Code:    http.StatusServiceUnavailable,
+		Message: msg,
+	}
+}
+
 // var ( // для квалицикации ошибок чтобы потом понимать в транспорте, какой статус код возвращать и какая конкретно ошибка произошла
 // 	// статус код 409
 // 	ErrUserAlreadyExists = errors.New("Пользователь с такой почтой уже существует")
