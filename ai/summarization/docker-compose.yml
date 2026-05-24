@@ -1,0 +1,21 @@
+name: qwen-summarizer
+
+services:
+  trt-llm-app:
+    build: .
+    container_name: qwen_summarizer
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_TOKEN=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
+    volumes:
+      - ./models:/app/models
+      - ./app:/app/src
+    command: ./start.sh
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
