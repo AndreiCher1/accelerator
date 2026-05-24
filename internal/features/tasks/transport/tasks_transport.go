@@ -4,9 +4,11 @@ import (
 	"accelerator/internal/core/config"
 	"accelerator/internal/core/error_type"
 	"accelerator/internal/core/server/authctx"
+	"accelerator/internal/domains"
 	"bytes"
 	"context"
 	"log/slog"
+	"strconv"
 
 	"accelerator/internal/core/storage"
 	"accelerator/internal/features/tasks/service"
@@ -20,7 +22,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi"
 	"github.com/go-playground/validator/v10"
@@ -46,6 +47,9 @@ func NewTasksTransport(serv *service.TasksService, minio *storage.MinIOClient, u
 	}
 }
 
+// ======================================== ЗАГРУЗКА АУДИО И СОЗДАНИЕ ЗАДАЧИ ==========================================
+
+// POST api/v1/tasks
 func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request) {
 
 	// ------------------------------------> СОЗДАНИЕ КОНТЕКСТА И ВАЛИДАЦИЯ ID <------------------------------------------
@@ -53,7 +57,6 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 
 	// получаем id пользователя из токена
 	callerID, ok := authctx.GetUserID(ctx)
-	_ = callerID
 	if !ok {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
 		return
@@ -161,6 +164,11 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 
 	// создаем новый head на случай, если файл маленький и прочиталось меньше 512 б
 	head = head[:n]
+	// на всякий случай проверим, поттому что непонятно, как отреагирует filetype.IsAudio на пустой слайс
+	if n == 0 {
+		tools.WriteError(w, error_type.NewBadRequest("Файл пуст"))
+		return
+	}
 	// проверяем MIME-тип загружаемого файла, если не аудио, кидаем ошибку
 	// сравнивает сигнатуры с известными аудиоформатами MP3, WAV, OGG, FLAC, M4A ...
 	if !filetype.IsAudio(head) {
@@ -168,7 +176,11 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// возвращает структуру Type, содержащую поля: MIME (например, "audio/mpeg")
-	kind, _ := filetype.Match(head)
+	kind, err := filetype.Match(head)
+	if err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("Не удалось определить тип файла"))
+		return
+	}
 	fileType := kind.MIME.Value // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 	// ---------------------------------------> ВАЛИДАЦИЯ НА ФОРМАТ <-----------------------------------------------
@@ -208,7 +220,7 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 	// Если случится ошибка до запуска горутины – освободим семафор и очистим временный файл
 	defer func() {
 		if !goroutineStarted {
-			<-trans.uploadSem                // освобождаем семафор
+			<-trans.uploadSem // освобождаем семафор
 			if tmpFile != nil {
 				tmpFile.Close()
 				os.Remove(tmpFile.Name())
@@ -247,22 +259,28 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 	// глобальная перемена для возврата и для горутины
 	taskID := uuid.New().String()
 	// сохраняем objectKey в БД в поле file_path
-	// taskInfo = trans.serv.CreateTask()
+	objectKey := config.UploadKey(groupID, taskID)
 
-	// в структуру TasksTransport добавить поле:
-	// инициализировать в конструкторе:
-
-	// перед запуском горутины:
+	taskInfo, err := trans.serv.UploadTaskService(
+		ctx,
+		callerID, groupID,
+		newRequest.TaskName, newRequest.Description, newRequest.MeetingDate, newRequest.PatternID,
+		objectKey, originalFilename, string(domains.StatusProcessingUpload),
+	)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
 
 	// -----------------------------> ЗАПУСКАЕМ ГОРУТИНУ, ЧТОБЫ НЕ ЗАДЕРЖИВАТЬ КЛИЕНТ <---------------------------------------------
 	goroutineStarted = true // чтобы defer не чистил файл и не освобождал семафор
 	go func() {
 		defer func() { <-trans.uploadSem }() // освобождаем семафор, если временный файл дошел до горутин без ошибок
 		trans.processUpload(
+			callerID,
 			taskID,
 			groupID,
-			callerID,
-			originalFilename,
+			objectKey,
 			fileType,
 			written,
 			tmpFile, // созданный прежде файл, закроется и удалится в горутине
@@ -272,11 +290,16 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 	// -----------------------------> ФОРМИРУЕМ ОТВЕТ КЛИЕНТУ <---------------------------------------------
 	newResponse := dto.ResponseUploadDTO{
 		TaskID:      taskID,
-		Status:      "processing",
-		FileName:    originalFilename,
-		FileType:    fileType,
-		WaitSeconds: 0,
-		CreatedAt:   time.Now(),
+		Status:      taskInfo.Status,
+		TaskName:    taskInfo.TaskName,
+		Description: taskInfo.Description,
+		MeetingDate: taskInfo.MeetingDate,
+
+		FileName:  originalFilename,
+		FileType:  fileType,
+		CreatedAt: taskInfo.CreatedAt,
+
+		ChangeFlag: taskInfo.ChangeFlag,
 	}
 
 	tools.WriteJSON(w, http.StatusCreated, newResponse)
@@ -285,7 +308,7 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 
 // вспомогательная функция для асинхронной обработки
 func (trans *TasksTransport) processUpload(
-	taskID, groupID, callerID, fileName, fileType string,
+	callerID, taskID, groupID, objectKey, fileType string,
 	fileSize int64,
 	tmpFile *os.File,
 ) {
@@ -301,13 +324,27 @@ func (trans *TasksTransport) processUpload(
 	// переменные, чтобы вызывать их в дефере, если нет ошибки
 	var taskErr error
 	var duration int
-	var objectKey string
 	defer func() {
 		if taskErr != nil {
 			slog.Error("Ошибка фонового воркера processUpload:", "err", taskErr)
-			trans.serv.UpdateTaskStatus(ctx, taskID, "failed", taskErr.Error())
+			if err := trans.serv.UpdateTaskStatusService(ctx, callerID, taskID, string(domains.StatusErrorUpload)); err != nil {
+				slog.Error("Не удалось обновить статус задачи", "taskID", taskID, "error", err)
+			}
 		} else {
-			trans.serv.UpdateTaskSuccess(ctx, taskID, objectKey, duration)
+			// когда успешно вычислятся длительность и загрузится в s3, тогда добавляем ссылку в бд и длительность
+			// также обновляем статус задачи, ожидает деноизинга
+			// также меняем объектные ключи
+			NewInputKey := objectKey
+			NewOutputKey := config.DenoisedKey(groupID, taskID)
+
+			if err := trans.serv.UpdateTaskSuccessUploadService(
+				ctx, callerID, taskID, objectKey,
+				duration, string(domains.StatusPendingDenoise), NewInputKey, NewOutputKey,
+			); err != nil {
+				slog.Error("Не удалось обновить статус задачи после успешной загрузки", "taskID", taskID, "error", err)
+				// Также можно попытаться перевести в error
+				_ = trans.serv.UpdateTaskStatusService(ctx, callerID, taskID, string(domains.StatusErrorUpload))
+			}
 		}
 	}()
 
@@ -342,10 +379,288 @@ func (trans *TasksTransport) processUpload(
 		return
 	}
 
-	objectKey = fmt.Sprintf("uploads/%s/%s/%s", groupID, taskID, fileName)
 	_, err := trans.minio.UploadFile(ctx, objectKey, tmpFile, fileSize, fileType)
 	if err != nil {
 		taskErr = fmt.Errorf("загрузка в S3: %w", err)
 		return
 	}
+}
+
+// =========================================== ПОЛУЧЕНИЕ СТАТУСА ЗАДАЧИ ==========================================
+
+// GET api/v1/tasks/{taskID}/status
+func (trans *TasksTransport) CheckStatusTaskHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
+	taskID := chi.URLParam(r, "taskID")
+	if err := trans.validate.Struct(dto.TaskIDRequestDTO{TaskID: taskID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID задачи"))
+		return
+	}
+
+	// получаем всю нужную информацию о статусе задачи
+	taskCheckInfo, err := trans.serv.GetTaskStatusService(ctx, callerID, taskID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим результат в дто и отправляем на клиент
+	newResponse := dto.ResponseCheckTaskDTO{
+		Status:                     taskCheckInfo.Status,
+		IsProcess:                  taskCheckInfo.IsProcess,
+		InTheQueueBefore:           taskCheckInfo.InTheQueueBefore,
+		ApproximateLeadTimeProcess: taskCheckInfo.ApproximateLeadTimeProcess,
+	}
+
+	tools.WriteJSON(w, http.StatusOK, newResponse)
+}
+
+// ======================================== ПОЛУЧЕНИЕ РЕЗУЛЬТАТОВ ЗАДАЧИ ==========================================
+
+// GET api/v1/tasks/{taskID}
+func (trans *TasksTransport) GetTaskHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
+	taskID := chi.URLParam(r, "taskID")
+	if err := trans.validate.Struct(dto.TaskIDRequestDTO{TaskID: taskID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID задачи"))
+		return
+	}
+
+	// получаем всю нужную информацию о задаче
+	taskInfo, err := trans.serv.GetTaskService(ctx, callerID, taskID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим результат в дто и отправляем на клиент
+	newResponse := dto.ResponseTaskDTO{
+		TaskID:  taskInfo.TaskID,
+		UserID:  taskInfo.UserID,
+		GroupID: taskInfo.GroupID,
+
+		TaskName:    taskInfo.TaskName,
+		Description: taskInfo.Description,
+		MeetingDate: taskInfo.MeetingDate,
+		PatternID:   taskInfo.PatternID,
+
+		Status:     taskInfo.Status,
+		ResultJson: taskInfo.ResultJson,
+
+		FileName: taskInfo.FileName,
+		Duration: taskInfo.Duration,
+
+		CreatedAt:   taskInfo.CreatedAt,
+		UpdatedAt:   taskInfo.UpdatedAt,
+		StartedAt:   taskInfo.StartedAt,
+		CompletedAt: taskInfo.CompletedAt,
+
+		ChangeFlag: taskInfo.ChangeFlag,
+	}
+
+	tools.WriteJSON(w, http.StatusOK, newResponse)
+}
+
+// ===================================== ПОЛУЧЕНИЕ ВСЕХ ЗАДАЧ В ГРУППЕ ==========================================
+
+// GET api/v1/tasks/{groupID}
+func (trans *TasksTransport) GetAllTaskInGroupHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
+	groupID := chi.URLParam(r, "groupID")
+	if err := trans.validate.Struct(dto.GroupIDRequestDTO{GroupID: groupID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
+		return
+	}
+
+	// получаем параметры пагинации из query параметров
+	newRequest := dto.PaginationRequestDTO{
+		Page:  r.URL.Query().Get("page"),
+		Limit: r.URL.Query().Get("limit"),
+	}
+
+	if err := trans.validate.Struct(newRequest); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("Ошибка во входных данных"))
+		return
+	}
+
+	// переводим данные в integer, уже валидировали, так что ошибку не получаем, там точно int
+	pageInt, _ := strconv.Atoi(newRequest.Page)
+	limitInt, _ := strconv.Atoi(newRequest.Limit)
+
+	// получаем список всех задач с пагинацией или же без, если -1
+	tasksInfo, totalTasks, err := trans.serv.GetAllTaskInGroupService(
+		ctx, callerID, groupID,
+		pageInt, limitInt,
+	)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим в массив и отправляем на клиент
+	var newResponseTasks []dto.ResponseTaskDTO
+
+	for _, task := range *tasksInfo {
+		newResponseTask := dto.ResponseTaskDTO{
+			TaskID:  task.TaskID,
+			UserID:  task.UserID,
+			GroupID: task.GroupID,
+
+			TaskName:    task.TaskName,
+			Description: task.Description,
+			MeetingDate: task.MeetingDate,
+			PatternID:   task.PatternID,
+
+			Status:     task.Status,
+			ResultJson: task.ResultJson,
+
+			FileName: task.FileName,
+			Duration: task.Duration,
+
+			CreatedAt:   task.CreatedAt,
+			UpdatedAt:   task.UpdatedAt,
+			StartedAt:   task.StartedAt,
+			CompletedAt: task.CompletedAt,
+
+			ChangeFlag: task.ChangeFlag,
+		}
+
+		newResponseTasks = append(newResponseTasks, newResponseTask)
+	}
+	newResponsePagination := dto.PaginationResponseDTO{
+		Page:  pageInt,
+		Limit: limitInt,
+		Total: totalTasks,
+	}
+
+	newResponse := dto.AllTasksResponseDTO{
+		Tasks:      newResponseTasks,
+		Pagination: newResponsePagination,
+	}
+
+	tools.WriteJSON(w, http.StatusOK, newResponse)
+}
+
+// ===================================== ИЗМЕНЕНИЕ ЗАДАЧИ ==========================================
+
+// PUT api/v1/tasks/{taskID}
+func (trans *TasksTransport) EditTaskHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
+	// валидируем ID задачи
+	newRequestTaskID := dto.TaskIDRequestDTO{
+		TaskID: chi.URLParam(r, "taskID"),
+	}
+
+	// получаем и валидируем данные для изменения от пользователя
+	var req dto.EditTaskRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("не удалось распарсить json"))
+		return
+	}
+	if err := trans.validate.Struct(req); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("ошибка во входных данных"))
+		return
+	}
+
+	// собираем ответ в мапу, пустые значения обрабатываем
+	updateData := make(map[string]string)
+	if req.TaskName != nil {
+		if *req.TaskName == "" {
+			tools.WriteError(w, error_type.NewBadRequest("название для задачи не может быть пустым"))
+			return
+		}
+		updateData["task_name"] = *req.TaskName
+	}
+	if req.Description != nil {
+		if *req.Description == "" {
+			tools.WriteError(w, error_type.NewBadRequest("описание для задачи не может быть пустым"))
+			return
+		}
+		updateData["description"] = *req.Description
+	}
+	if req.MeetingDate != nil {
+		if *req.MeetingDate == "" {
+			tools.WriteError(w, error_type.NewBadRequest("дата не может быть пустой"))
+			return
+		}
+		updateData["meeting_date"] = *req.MeetingDate
+	}
+	if len(updateData) == 0 {
+		tools.WriteError(w, error_type.NewBadRequest("не передано ни одного поля для изменения"))
+		return
+	}
+
+	updatedTask, err := trans.serv.EditTaskService(ctx, callerID, newRequestTaskID.TaskID, updateData)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим результат в дто и отправляем на клиент
+	newResponse := dto.ResponseTaskDTO{
+		TaskID:  updatedTask.TaskID,
+		UserID:  updatedTask.UserID,
+		GroupID: updatedTask.GroupID,
+
+		TaskName:    updatedTask.TaskName,
+		Description: updatedTask.Description,
+		MeetingDate: updatedTask.MeetingDate,
+		PatternID:   updatedTask.PatternID,
+
+		Status:     updatedTask.Status,
+		ResultJson: updatedTask.ResultJson,
+
+		FileName: updatedTask.FileName,
+		Duration: updatedTask.Duration,
+
+		CreatedAt:   updatedTask.CreatedAt,
+		UpdatedAt:   updatedTask.UpdatedAt,
+		StartedAt:   updatedTask.StartedAt,
+		CompletedAt: updatedTask.CompletedAt,
+
+		ChangeFlag: updatedTask.ChangeFlag,
+	}
+
+	tools.WriteJSON(w, http.StatusOK, newResponse)
+}
+
+// ===================================== УДАЛЕНИЕ ЗАДАЧИ ===========================================
+// DELETE api/v1/tasks/{taskID}
+func (trans *TasksTransport) DeleteTaskHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+	}
+
+	newRequestTaskID := dto.TaskIDRequestDTO{
+		TaskID: chi.URLParam(r, "taskID"),
+	}
+
+	if err := trans.serv.DeleteTaskService(ctx, callerID, newRequestTaskID.TaskID); err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

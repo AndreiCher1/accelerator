@@ -1,24 +1,23 @@
 CREATE TABLE tasks (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL, -- при удалении пользователя задача остается
+    user_id UUID REFERENCES users(id), -- при удалении пользователя задача остается
     group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE, -- при удалении группы все задачи в группе удаляются
     task_name VARCHAR(255) NOT NULL,
     description TEXT,
     meeting_date DATE,
-    asr_model VARCHAR(50) NOT NULL,
-    llm_model VARCHAR(50) NOT NULL,
-    tokens INTEGER NOT NULL,
     pattern_id UUID REFERENCES patterns(id), -- привязываем к шаблону промпта, которые создают админ или креатор
-    file_path VARCHAR(512) NOT NULL,
+    file_path VARCHAR(512), -- загружается после в горутине, поэтому можетт быть NULL
     file_name VARCHAR(100) NOT NULL,
-    duration INTEGER NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    duration INTEGER, -- загружается после в горутине, поэтому можетт быть NULL
+    status VARCHAR(50) NOT NULL,
     result_json JSONB,
-    stage_entered_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    started_at TIMESTAMP,
-    competed_at TIMESTAMP
+    current_input_key TEXT; -- ссылка на результат для текущего этапа (откуда загружать для начала обработки)
+    current_output_key TEXT; -- ссылка на конечный результат (для загрузки)
+    stage_entered_at TIMESTAMP WITH TIME ZONE DEFAULT now(), -- последнее изменение статуса задачи для формулы приоритета
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(), -- время создания задачи
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(), -- фиксация любого изменения, служебное поле
+    started_at TIMESTAMP, -- время, когда начался процесс обработки
+    completed_at TIMESTAMP -- время окончания всех обработок, статус DONE
 );
 
 CREATE INDEX idx_tasks_group_id ON tasks(group_id);

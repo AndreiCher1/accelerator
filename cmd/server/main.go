@@ -10,6 +10,7 @@ import (
 	patternsRepository "accelerator/internal/features/patterns/repository"
 	tasksRepository "accelerator/internal/features/tasks/repository"
 	"accelerator/internal/tools"
+	"accelerator/internal/worker"
 	"fmt"
 
 	adminService "accelerator/internal/features/admin/service"
@@ -61,6 +62,12 @@ func main() {
 	if err != nil {
 		slog.Error("Ошибка при инициализации клиента minio:", "err", err)
 	}
+
+	// инициализация менеджера ресурсов
+	resourceManager := worker.NewGPUManager(
+		cfg.TotalVRAMGB,
+		cfg.TotalRAMGB,
+	)
 
 	pool, err := pgxpool.New(context.Background(), cfg.DBDSN) // создаем пул соединений
 	defer func() { pool.Close() }()                           // перед завершением работы закрываем соединение с базой данных

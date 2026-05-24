@@ -120,51 +120,74 @@ func (repo *AdminRepository) InsertNewUser(
 
 // ищет пользователей по роли делающего запрос
 // возвращает список найденных пользователей, сортированный от admin->user в алфавитном порядке
+// если limit <= 0 – пагинация не применяется, возвращаются все записи
 func (repo *AdminRepository) SelectAllUsersWithAdminFirst(ctx context.Context, page, limit int) (*[]domains.User, error) {
-	sqlQuery := `
-	SELECT id, login, full_name, position, role, created_at
-	FROM users
-	WHERE role IN ('admin', 'user')
-	ORDER BY 
-		CASE role 
-			WHEN 'admin' THEN 1  -- сначала по админу
-			WHEN 'user' THEN 2 -- потом все юзеры
-		END,
-		full_name ASC -- а эти группы по алфавиту
-	LIMIT $2
-	OFFSET ($1 - 1) * $2;
-	`
+    var query string
+    var args []interface{}
 
-	rows, err := repo.pool.Query(ctx, sqlQuery, page, limit)
-	if err != nil {
-		return nil, error_type.NewInternal(fmt.Errorf("get users info: %w", err))
-	}
+    if limit > 0 {
+        query = `
+        SELECT id, login, full_name, position, role, created_at
+        FROM users
+        WHERE role IN ('admin', 'user')
+        ORDER BY 
+            CASE role 
+                WHEN 'admin' THEN 1
+                WHEN 'user' THEN 2
+            END,
+            created_at ASC
+        LIMIT $2
+        OFFSET ($1 - 1) * $2;`
+        args = []interface{}{page, limit}
+    } else {
+        // без пагинации
+        query = `
+        SELECT id, login, full_name, position, role, created_at
+        FROM users
+        WHERE role IN ('admin', 'user')
+        ORDER BY 
+            CASE role 
+                WHEN 'admin' THEN 1
+                WHEN 'user' THEN 2
+            END,
+            created_at ASC`
+        args = nil
+    }
 
-	usersInfo := make([]domains.User, 0)
+    rows, err := repo.pool.Query(ctx, query, args...)
+    if err != nil {
+        return nil, error_type.NewInternal(fmt.Errorf("get users info: %w", err))
+    }
+    defer rows.Close()
 
-	for rows.Next() {
-		var userInfo domains.User
+    usersInfo := make([]domains.User, 0)
+    for rows.Next() {
+        var userInfo domains.User
+        if err := rows.Scan(
+            &userInfo.ID,
+            &userInfo.Login,
+            &userInfo.FullName,
+            &userInfo.Position,
+            &userInfo.Role,
+            &userInfo.CreatedAt,
+        ); err != nil {
+            return nil, error_type.NewInternal(fmt.Errorf("scan user: %w", err))
+        }
+        usersInfo = append(usersInfo, userInfo)
+    }
 
-		if err := rows.Scan(
-			&userInfo.ID,
-			&userInfo.Login,
-			&userInfo.FullName,
-			&userInfo.Position,
-			&userInfo.Role,
-			&userInfo.CreatedAt,
-		); err != nil {
-			return nil, error_type.NewInternal(fmt.Errorf("scan user: %w", err))
-		}
-
-		usersInfo = append(usersInfo, userInfo)
-	}
-
-	return &usersInfo, nil
+    return &usersInfo, nil
 }
 
-// возвращает список найденных пользователей user, которые состоят с админом хотя бы в одной общей группе, сортированный в алфавитном порядке
+// возвращает список найденных пользователей user, которые состоят с админом хотя бы в одной общей группе,
+// сортированный в алфавитном порядке
+// если limit <= 0 – пагинация не применяется, возвращаются все записи
 func (repo *AdminRepository) SelectOnlyUsersGeneralGroup(ctx context.Context, callerID string, page, limit int) (*[]domains.User, error) {
-    sqlQuery := `
+    var query string
+    var args []interface{}
+
+    if limit > 0 {
+        query = `
         SELECT DISTINCT u.id, u.login, u.full_name, u.position, u.role, u.created_at
         FROM users u
         JOIN group_members gm ON gm.user_id = u.id
@@ -174,11 +197,26 @@ func (repo *AdminRepository) SelectOnlyUsersGeneralGroup(ctx context.Context, ca
               WHERE gm2.group_id = gm.group_id
                 AND gm2.user_id = $3
           )
-        ORDER BY u.full_name ASC
+        ORDER BY u.created_at ASC
         LIMIT $2
-        OFFSET ($1 - 1) * $2;
-    `
-    rows, err := repo.pool.Query(ctx, sqlQuery, page, limit, callerID)
+        OFFSET ($1 - 1) * $2;`
+        args = []interface{}{page, limit, callerID}
+    } else {
+        query = `
+        SELECT DISTINCT u.id, u.login, u.full_name, u.position, u.role, u.created_at
+        FROM users u
+        JOIN group_members gm ON gm.user_id = u.id
+        WHERE u.role = 'user'
+          AND EXISTS (
+              SELECT 1 FROM group_members gm2
+              WHERE gm2.group_id = gm.group_id
+                AND gm2.user_id = $1
+          )
+        ORDER BY u.created_at ASC`
+        args = []interface{}{callerID}
+    }
+
+    rows, err := repo.pool.Query(ctx, query, args...)
     if err != nil {
         return nil, error_type.NewInternal(fmt.Errorf("get users info: %w", err))
     }
@@ -244,17 +282,27 @@ func (repo *AdminRepository) SelectCountUsersGeneralGroup(ctx context.Context, c
 // принимает ID и мапу с полями и значениями для изменения
 // возвращает измененного пользователя и ошибку, если пользователя нет
 func (repo *AdminRepository) EditUser(ctx context.Context, userID string, editInfo map[string]string) (*domains.User, error) {
+	allowed := map[string]bool{"login": true, "full_name": true, "position": true, "role": true}
 	// Собираем части SET и аргументы
 	setClauses := make([]string, 0, len(editInfo))
 	args := make([]any, 0, len(editInfo)+1)
 	i := 1
 	for field, value := range editInfo {
+		// проверяем на корректность переданные поля
+		if !allowed[field] {
+			continue
+		}
 		// формируем массив типа ["login = $1", "role = $2"]
 		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", field, i))
 		// добавляем аргументы в отдельный массив для передачи
 		args = append(args, value)
 		i++
 	}
+	if len(setClauses) == 0 {
+		// Если нет допустимых полей, возвращаем текущую информацию о группе без изменений
+		return repo.SelectUserByID(ctx, userID)
+	}
+
 	args = append(args, userID) // чтобы потом распаковать
 
 	sqlQuery := fmt.Sprintf(
