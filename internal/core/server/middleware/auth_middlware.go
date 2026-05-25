@@ -29,7 +29,7 @@ func AuthMiddleware(cfg *config.Config) func (http.Handler) http.Handler { // в
 			tokenString := strings.TrimPrefix(authHeader, prefix)
 
 			// 3. Валидируем токен через готовую функцию
-			userID, err := tools.ParseAccessToken(tokenString, cfg)
+			userID, userRole, err := tools.ParseAccessToken(tokenString, cfg)
 			if err != nil {
 				tools.WriteError(w, error_type.NewUnauthorized("Невалидный access токен"))
 				return
@@ -37,6 +37,7 @@ func AuthMiddleware(cfg *config.Config) func (http.Handler) http.Handler { // в
 
 			// 4. Кладём userID в контекст
 			ctx := authctx.WithUserID(r.Context(), userID)
+			ctx = authctx.WithUserRole(ctx, userRole)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

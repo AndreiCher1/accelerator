@@ -32,9 +32,16 @@ func NewPatternsTransport(serv *service.PatternsService, validate *validator.Val
 // если не укажет, то он будет глобальный
 func (trans *PatternsTransport) CreatePatternHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
 		return
 	}
 
@@ -151,7 +158,7 @@ func (trans *PatternsTransport) GetGroupPatterns(w http.ResponseWriter, r *http.
 
 	// получение и валидация group ID
 	groupID := chi.URLParam(r, "groupID")
-	if err := trans.validate.Struct(dto.PatternIDDTO{PatternID: groupID}); err != nil {
+	if err := trans.validate.Struct(dto.GroupIDDTO{GroupID: groupID}); err != nil {
 		tools.WriteError(w, error_type.NewBadRequest("некорректный ID группы"))
 		return
 	}
@@ -209,9 +216,16 @@ func (trans *PatternsTransport) GetGroupPatterns(w http.ResponseWriter, r *http.
 // GET patterns/global
 func (trans *PatternsTransport) GetCreatorPatterns(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
 		return
 	}
 
@@ -250,9 +264,16 @@ func (trans *PatternsTransport) GetCreatorPatterns(w http.ResponseWriter, r *htt
 // GET patterns/all
 func (trans *PatternsTransport) GetAllPatternsInGroups(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
 		return
 	}
 
@@ -304,9 +325,16 @@ func (trans *PatternsTransport) GetAllPatternsInGroups(w http.ResponseWriter, r 
 // PUT patterns/{patternID}
 func (trans *PatternsTransport) EditPattern(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
 		return
 	}
 
@@ -371,6 +399,7 @@ func (trans *PatternsTransport) EditPattern(w http.ResponseWriter, r *http.Reque
 	// маппим и отправляем на клиент
 	newResponse := dto.PatternResponseDTO{
 		ID:               editPattern.ID,
+		GroupID:          editPattern.GroupID,
 		Name:             editPattern.Name,
 		Description:      editPattern.Description,
 		SummaryPrompt:    editPattern.SummaryPrompt,
@@ -386,9 +415,16 @@ func (trans *PatternsTransport) EditPattern(w http.ResponseWriter, r *http.Reque
 // DELETE patterns/{patternID}
 func (trans *PatternsTransport) DeletePattern(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
 		return
 	}
 

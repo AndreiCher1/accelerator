@@ -34,9 +34,8 @@ type RequestAuthDTO struct {
 type ResponceTokensDTO struct {
 	AccessToken       string    `json:"access_token"`
 	RefreshToken      string    `json:"refresh_token,omitempty"` // не всегда нужен
-	AccessExpireTime  time.Time `json:"expires_in"`
+	AccessExpireTime  time.Time `json:"expires_at"`
 	TokenType         string    `json:"token_type"`
-	Role              string    `json:"role"`
 	TemporaryPassword bool      `json:"temporary_password"`
 }
 
@@ -56,7 +55,7 @@ func (trans *AuthTransport) LoginHandle(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// если все окей, отправляем запрос в сервис для входа и получения токенов
-	tokensInfo, userRole, temporaryPassword, err := trans.serv.LoginUserService(ctx, newRequest.Login, newRequest.Password)
+	tokensInfo, temporaryPassword, err := trans.serv.LoginUserService(ctx, newRequest.Login, newRequest.Password)
 	if err != nil {
 		tools.WriteError(w, err)
 		return
@@ -68,7 +67,6 @@ func (trans *AuthTransport) LoginHandle(w http.ResponseWriter, r *http.Request) 
 		RefreshToken:      tokensInfo.RefreshToken,
 		AccessExpireTime:  tokensInfo.AccessExpireTime,
 		TokenType:         "Bearer",
-		Role:              userRole,
 		TemporaryPassword: temporaryPassword,
 	}
 
@@ -126,6 +124,7 @@ func (trans *AuthTransport) ChangeTempPasswordHandle(w http.ResponseWriter, r *h
 	callerID, ok := authctx.GetUserID(ctx)
 	if !ok {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
 	}
 
 	// парсим json в структуру для дальнейшей работы

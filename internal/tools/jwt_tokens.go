@@ -13,7 +13,7 @@ import (
 
 // возвращаем два токена и ошибку
 // сначала access, потом refresh
-func GenerateJWTToken(userID string, cfg *config.Config) (*domains.ReturnCreateTokensInfo, error) {
+func GenerateJWTToken(userID, userRole string, cfg *config.Config) (*domains.ReturnCreateTokensInfo, error) {
 	createTime := time.Now()
 	accessExpareTime := createTime.Add(cfg.AccessTime)
 	refreshExpareTime := createTime.Add(cfg.RefreshTime)
@@ -22,6 +22,7 @@ func GenerateJWTToken(userID string, cfg *config.Config) (*domains.ReturnCreateT
 
 	accessClaims := jwt.MapClaims{
 		"user_id": userID,
+		"role":    userRole,
 		"exp":     accessExpareTime.Unix(), // время истечения срока токена
 		"iat":     createTime.Unix(),       // время создания токена
 	}
@@ -72,7 +73,6 @@ func GenerateJWTToken(userID string, cfg *config.Config) (*domains.ReturnCreateT
 
 }
 
-
 // парсит токен, проверяет подпись и срок действия
 // Возвращает мапу с параметрами токена и ошибку
 func ParseAndValidateToken(tokenString string, secret []byte) (jwt.MapClaims, error) {
@@ -105,46 +105,49 @@ func generateJTI() string {
 	return uuid.New().String()
 }
 
-
-
-
-// возвращает userID из access-токена и валидирует его
-func ParseAccessToken(tokenString string, cfg *config.Config) (string, error) {
-    claims, err := ParseAndValidateToken(tokenString, []byte(cfg.JWTAccessSecret))
-    if err != nil {
-        return "", err
-    }
+// возвращает userID и роль из access-токена и валидирует его
+func ParseAccessToken(tokenString string, cfg *config.Config) (string, string, error) {
+	claims, err := ParseAndValidateToken(tokenString, []byte(cfg.JWTAccessSecret))
+	if err != nil {
+		return "", "", err
+	}
 	// проверяем, есть ли в параметрах токена id
-    userID, ok := claims["user_id"].(string)
-    if !ok {
-        return "", fmt.Errorf("user_id claim missing or not a string: %w", err)
-    }
+	userID, ok := claims["user_id"].(string)
+	if !ok {
+		return "", "", fmt.Errorf("user_id claim missing or not a string: %w", err)
+	}
 
-    return userID, nil
+	// проверяем, есть ли в параметрах токена id
+	userRole, ok := claims["role"].(string)
+	if !ok {
+		return "", "", fmt.Errorf("role claim missing or not a string: %w", err)
+	}
+
+	return userID, userRole, nil
 }
 
 // возвращает userID и jti из refresh-токена и валидирует его
 // jti используется для поиска сессии в БД
 func ParseRefreshToken(tokenString string, cfg *config.Config) (string, string, error) {
-    claims, err := ParseAndValidateToken(tokenString, []byte(cfg.JWTRefreshSecret))
-    if err != nil {
-        return "", "", err
-    }
+	claims, err := ParseAndValidateToken(tokenString, []byte(cfg.JWTRefreshSecret))
+	if err != nil {
+		return "", "", err
+	}
 	// проверяем, есть ли в параметрах токена id
-    userID, ok := claims["user_id"].(string)
-    if !ok {
-        return "", "", fmt.Errorf("user_id claim missing or not a string: %w", err)
-    }
+	userID, ok := claims["user_id"].(string)
+	if !ok {
+		return "", "", fmt.Errorf("user_id claim missing or not a string: %w", err)
+	}
 	// проверяем, есть ли в параметрах токена jti
-    jtiClaim, ok := claims["jti"]
-    if !ok {
-        return "", "", fmt.Errorf("jti claim missing in refresh token: %w", err)
-    }
+	jtiClaim, ok := claims["jti"]
+	if !ok {
+		return "", "", fmt.Errorf("jti claim missing in refresh token: %w", err)
+	}
 	// можно ли привести jti к строке, или он получится невалидный
-    jti, ok := jtiClaim.(string)
-    if !ok {
-        return "", "", fmt.Errorf("jti claim is not a string: %w", err)
-    }
+	jti, ok := jtiClaim.(string)
+	if !ok {
+		return "", "", fmt.Errorf("jti claim is not a string: %w", err)
+	}
 
-    return userID, jti, nil
+	return userID, jti, nil
 }

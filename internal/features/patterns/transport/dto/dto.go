@@ -24,6 +24,9 @@ type EditPatternRequestDTO struct {
 type PatternIDDTO struct {
 	PatternID string `validate:"required,uuid4"`
 }
+type GroupIDDTO struct {
+	GroupID string `validate:"required,uuid4"`
+}
 
 type PatternResponseDTO struct {
 	ID               string          `json:"pattern_id"`

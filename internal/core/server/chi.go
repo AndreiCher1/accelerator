@@ -14,6 +14,7 @@ import (
 
 	chiMiddleware "github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 )
 
 func StartNewChiServer(
@@ -24,7 +25,17 @@ func StartNewChiServer(
 
 	cfg *config.Config,
 ) error {
-	router := chi.NewRouter() // используем chi, он легковесный , в нем есть встроенные обработчики переменных в паттерне и нормальный роутинг
+	router := chi.NewRouter()
+
+	// CORS — разрешаем запросы с дев-сервера фронта (Vite). В проде список origin нужно сузить.
+	router.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   cfg.ClientURLs,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
 
 	router.Use(chiMiddleware.RequestID) // генерирует для каждого запроса уникальный ID
 	router.Use(chiMiddleware.RealIP)    // позволяет видеть реальный IP пользователя для логера
@@ -78,7 +89,20 @@ func StartNewChiServer(
 		router.Route("/tasks", func(router chi.Router) {
 			router.Use(middleware.AuthMiddleware(cfg))
 			// загрузка аудио и прочей информации для транскрибации
-			router.Post("/upload/{groupID}", tasksTrans.UploadHandle)
+			router.Post("/upload", tasksTrans.UploadHandle)
+			// для получения информации о статусе выполнения задачи,
+			// такой как статус, в процессе или нет, колическтво человек в очереди перед ним и примерное время ожидания
+			router.Get("/{taskID}/status", tasksTrans.CheckStatusTaskHandle)
+			// для получения обобщенной информации о задаче, а также результатов, если статус DONE
+			// в том числе флаги для изменения
+			router.Get("/{taskID}", tasksTrans.GetTaskHandle)
+			// получает все задачи с флагами изменения, доступные в группе со всеми статусами
+			router.Get("/{groupID}", tasksTrans.GetAllTaskInGroupHandle)
+			// изменение информации о задаче, если статус Done, 
+			// возвращет измененную задачу, а также флаг для изменения
+			router.Put("/{taskID}", tasksTrans.EditTaskHandle)
+
+			router.Delete("/{taskID}", tasksTrans.DeleteTaskHandle)
 		})
 
 		// работа с шаблонами

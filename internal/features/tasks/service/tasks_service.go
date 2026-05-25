@@ -34,6 +34,15 @@ func (serv *TasksService) UploadTaskService(
 	taskName, taskDescription, meetingDate, patternID,
 	fileName, filePath, statusTask string,
 ) (*domains.Task, error) {
+	// проверяем группу на существование
+	valid, err := serv.repo.CheckGroup(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !valid {
+		return nil, error_type.NewNotFound("Группа не найдена")
+	}
+
 	// проверяем, состоит ли пользователь в группе, в которую он хочет загрузить задачу
 	consist, err := serv.repo.IsUserIntoGroup(ctx, userID, groupID)
 	if err != nil {
@@ -68,6 +77,12 @@ func (serv *TasksService) UploadTaskService(
 // - количество человек в очереди с высшим приоритетом (при ожидании процесса),
 // - примерное время ожидания (для начатого процесса) в минутах
 func (serv *TasksService) GetTaskStatusService(ctx context.Context, callerID, taskID string) (*domains.TaskCheck, error) {
+	// получаем статус задачи, а заодно и проверяем ее существование
+	status, err := serv.repo.SelectTaskStatus(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
 	// проверяем, имеет ли пользователь доступ к этой задаче
 	exists, err := serv.repo.CheckUserInTaskGroup(ctx, callerID, taskID)
 	if err != nil {
@@ -75,12 +90,6 @@ func (serv *TasksService) GetTaskStatusService(ctx context.Context, callerID, ta
 	}
 	if !exists {
 		return nil, error_type.NewNotFound("Задача не найдена")
-	}
-
-	// получаем статус задачи, а заодно и проверяем ее существование
-	status, err := serv.repo.SelectTaskStatus(ctx, taskID)
-	if err != nil {
-		return nil, err
 	}
 
 	// получаем объект конвеера и флаг, процесс или ожидание
@@ -267,7 +276,7 @@ func (serv *TasksService) EditTaskService(ctx context.Context, callerID, taskID 
 		return nil, err
 	}
 
-	// получаем данные о задаче
+	// получаем данные о задаче и проверяем ее существование
 	taskInfo, err := serv.repo.SelectTaskByID(ctx, taskID)
 	if err != nil {
 		return nil, err
@@ -319,7 +328,7 @@ func (serv *TasksService) DeleteTaskService(ctx context.Context, callerID, taskI
 		return err
 	}
 
-	// получаем данные о задаче
+	// получаем данные о задаче и проверяем ее существование
 	taskInfo, err := serv.repo.SelectTaskByID(ctx, taskID)
 	if err != nil {
 		return err

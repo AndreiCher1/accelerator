@@ -31,24 +31,24 @@ func NewAuthService(repo *repository.AuthRepo, cfg *config.Config) *AuthService 
 // принимает почту и пароль
 // проверяет, есть ли пользователь с такими данными в таблице users, создает новую сессию
 // возвращает ошибки с разных уровней и информацию о токенах
-func (serv *AuthService) LoginUserService(ctx context.Context, login, password string) (*domains.ReturnCreateTokensInfo, string, bool, error) {
+func (serv *AuthService) LoginUserService(ctx context.Context, login, password string) (*domains.ReturnCreateTokensInfo, bool, error) {
 	// 1) получаем хэш пароля для дальнейшей проверки и ID пользователя для генерации токенов
 	// также отсюда получаем роль и флаг, временный ли пароль
 	userAuthInfo, err := serv.repo.GetAuthCredentials(ctx, login)
 	if err != nil {
-		return nil, "", false, err
+		return nil, false, err
 	}
 
 	// 2) проверяем хэш переданного пароля с той же солью, что и в полученном userAuthInfo.PasswordHash
 	isComparePasswords := tools.ComparePasswordHash(userAuthInfo.PasswordHash, password)
 	if !isComparePasswords { // если не совпадают, возвращаем ошибку
-		return nil, "", false, error_type.NewUnauthorized("Invalid login or password")
+		return nil, false, error_type.NewUnauthorized("Invalid login or password")
 	}
 
 	// 3) генерируем jwt токены, принимаем всю информацию о них
-	tokensInfo, err := tools.GenerateJWTToken(userAuthInfo.ID, serv.cfg)
+	tokensInfo, err := tools.GenerateJWTToken(userAuthInfo.ID, userAuthInfo.Role, serv.cfg)
 	if err != nil {
-		return nil, "", false, error_type.NewInternal(fmt.Errorf("generate tokens: %w", err))
+		return nil, false, error_type.NewInternal(fmt.Errorf("generate tokens: %w", err))
 	}
 
 	// 4) получаем хэш refresh токена для хранения в базе данных сессий пользователя
@@ -64,10 +64,10 @@ func (serv *AuthService) LoginUserService(ctx context.Context, login, password s
 		tokensInfo.RefreshExpireTime,
 	)
 	if err != nil {
-		return nil, "", false, err
+		return nil, false, err
 	}
 
-	return tokensInfo, userAuthInfo.Role, userAuthInfo.TemporaryPassword, nil
+	return tokensInfo, userAuthInfo.TemporaryPassword, nil
 }
 
 // =========================== ОБНОВЛЕНИЕ ТОКЕНОВ ====================================
@@ -91,6 +91,13 @@ func (serv *AuthService) RefreshUserService(ctx context.Context, refreshToken st
 	if err != nil {
 		return nil, error_type.NewUnauthorized("Invalid token")
 	}
+
+	// 2) получаем роль пользователя по его ID
+	userRole, err := serv.repo.GetUserRole(ctx, userIDFromToken)
+	if err != nil {
+		return nil, err
+	}
+	
 
 	// 2) получаем сессию по jti
 	sessionInfo, err := serv.repo.GetSessionByJTI(ctx, jti)
@@ -132,8 +139,8 @@ func (serv *AuthService) RefreshUserService(ctx context.Context, refreshToken st
 		return nil, err
 	}
 
-	// 6) генерируем jwt токены, принимаем всю информацию о них, используя userID
-	tokensInfo, err := tools.GenerateJWTToken(sessionInfo.UserID, serv.cfg)
+	// 6) генерируем jwt токены, принимаем всю информацию о них, используя userID и userRole
+	tokensInfo, err := tools.GenerateJWTToken(sessionInfo.UserID, userRole, serv.cfg)
 	if err != nil {
 		return nil, error_type.NewInternal(fmt.Errorf("generate tokens: %w", err))
 	}

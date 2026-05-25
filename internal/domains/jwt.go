@@ -7,6 +7,6 @@ type ReturnCreateTokensInfo struct {
 	RefreshToken      string    // возвращаем на клиент
 	RefreshJTI        string    // уникальный идентификатор refresh-токена
 	CreateTime        time.Time // для дальнейшей записи в бд сессии
-	AccessExpireTime  time.Time // возвращаем на клиент
+	AccessExpireTime  time.Time // возвращаем на клиент время истечения
 	RefreshExpireTime time.Time // для дальнейшей записи в бд сессии
 }

@@ -102,11 +102,21 @@ type RegisterUserResponseDTO struct {
 
 func (trans *AdminTransport) RegisterNewUserHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		// Не должно случиться, если middleware правильно настроен, но на всякий случай
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
 	}
+	// и первичная проверка доступа
+	if callerRole != "creator" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
+	}
+
+
 
 	newRequest := RegisterUserRequestDTO{}
 	if err := json.NewDecoder(r.Body).Decode(&newRequest); err != nil {
@@ -159,9 +169,18 @@ type GetUsersResponseDTO struct {
 
 func (trans *AdminTransport) GetUsersHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
+		// Не должно случиться, если middleware правильно настроен, но на всякий случай
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	newRequest := GetUsersRequestDTO{
@@ -235,9 +254,17 @@ type EditUserRequestDTO struct {
 
 func (trans *AdminTransport) EditUserHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	newRequestUserID := dto.UserIDRequestDTO{
@@ -323,9 +350,17 @@ type ResetPasswordResponseDTO struct {
 
 func (trans *AdminTransport) ResetPasswordHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	newRequestUserID := dto.UserIDRequestDTO{
@@ -361,9 +396,17 @@ type DeleteUserRequestDTO struct {
 
 func (trans *AdminTransport) DeleteUserHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	newRequestUserID := dto.UserIDRequestDTO{
@@ -392,9 +435,17 @@ func (trans *AdminTransport) DeleteUserHandle(w http.ResponseWriter, r *http.Req
 // создаёт новую группу
 func (trans *AdminTransport) CreateGroupHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	var req dto.CreateGroupRequestDTO
@@ -428,9 +479,17 @@ func (trans *AdminTransport) CreateGroupHandle(w http.ResponseWriter, r *http.Re
 // возвращает информацию о группе и список участников
 func (trans *AdminTransport) GetMembersGroupHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 	
 	groupID := chi.URLParam(r, "groupID")
@@ -473,9 +532,17 @@ func (trans *AdminTransport) GetMembersGroupHandle(w http.ResponseWriter, r *htt
 // возвращает список групп, доступных пользователю
 func (trans *AdminTransport) GetGroupsHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	groups, err := trans.serv.GetGroupsService(ctx, callerID)
@@ -504,9 +571,17 @@ func (trans *AdminTransport) GetGroupsHandle(w http.ResponseWriter, r *http.Requ
 // изменяет название, описание или владельца группы
 func (trans *AdminTransport) EditGroupHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	groupID := chi.URLParam(r, "groupID")
@@ -570,9 +645,17 @@ func (trans *AdminTransport) EditGroupHandle(w http.ResponseWriter, r *http.Requ
 // добавляет пользователя в группу
 func (trans *AdminTransport) AddUserGroupHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	groupID := chi.URLParam(r, "groupID")
@@ -596,9 +679,17 @@ func (trans *AdminTransport) AddUserGroupHandle(w http.ResponseWriter, r *http.R
 // удаляет пользователя из группы
 func (trans *AdminTransport) DeleteUserGroupHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" && callerRole != "admin" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	groupID := chi.URLParam(r, "groupID")
@@ -622,9 +713,17 @@ func (trans *AdminTransport) DeleteUserGroupHandle(w http.ResponseWriter, r *htt
 // удаляет группу
 func (trans *AdminTransport) DeleteGroupHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	callerID, ok := authctx.GetUserID(ctx)
-	if !ok {
+	// получение переменных из контекста
+	callerID, okID := authctx.GetUserID(ctx)
+	callerRole, okRole := authctx.GetUserRole(ctx)
+	if !okID || !okRole {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+	// и первичная проверка доступа
+	if callerRole != "creator" {
+		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
+		return
 	}
 
 	groupID := chi.URLParam(r, "groupID")

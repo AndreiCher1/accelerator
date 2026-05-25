@@ -32,7 +32,7 @@ import (
 type TasksTransport struct {
 	serv      *service.TasksService
 	minio     *storage.MinIOClient
-	uploadSem chan struct{}
+	uploadSem chan struct{} // для ограничения количество одновременных загрузок временных файлов на диск
 	validate  *validator.Validate
 	cfg       *config.Config
 }
@@ -49,7 +49,7 @@ func NewTasksTransport(serv *service.TasksService, minio *storage.MinIOClient, u
 
 // ======================================== ЗАГРУЗКА АУДИО И СОЗДАНИЕ ЗАДАЧИ ==========================================
 
-// POST api/v1/tasks
+// POST api/v1/tasks/upload
 func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request) {
 
 	// ------------------------------------> СОЗДАНИЕ КОНТЕКСТА И ВАЛИДАЦИЯ ID <------------------------------------------
@@ -294,6 +294,7 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 		TaskName:    taskInfo.TaskName,
 		Description: taskInfo.Description,
 		MeetingDate: taskInfo.MeetingDate,
+		PatternID:   taskInfo.PatternID,
 
 		FileName:  originalFilename,
 		FileType:  fileType,
@@ -394,6 +395,7 @@ func (trans *TasksTransport) CheckStatusTaskHandle(w http.ResponseWriter, r *htt
 	callerID, ok := authctx.GetUserID(ctx)
 	if !ok {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
 	}
 
 	taskID := chi.URLParam(r, "taskID")
@@ -428,6 +430,7 @@ func (trans *TasksTransport) GetTaskHandle(w http.ResponseWriter, r *http.Reques
 	callerID, ok := authctx.GetUserID(ctx)
 	if !ok {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
 	}
 
 	taskID := chi.URLParam(r, "taskID")
@@ -479,6 +482,7 @@ func (trans *TasksTransport) GetAllTaskInGroupHandle(w http.ResponseWriter, r *h
 	callerID, ok := authctx.GetUserID(ctx)
 	if !ok {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
 	}
 
 	groupID := chi.URLParam(r, "groupID")
@@ -564,6 +568,7 @@ func (trans *TasksTransport) EditTaskHandle(w http.ResponseWriter, r *http.Reque
 	callerID, ok := authctx.GetUserID(ctx)
 	if !ok {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
 	}
 
 	// валидируем ID задачи
@@ -651,6 +656,7 @@ func (trans *TasksTransport) DeleteTaskHandle(w http.ResponseWriter, r *http.Req
 	callerID, ok := authctx.GetUserID(ctx)
 	if !ok {
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
 	}
 
 	newRequestTaskID := dto.TaskIDRequestDTO{

@@ -281,7 +281,7 @@ func (repo *AdminRepository) SelectCountUsersGeneralGroup(ctx context.Context, c
 
 // принимает ID и мапу с полями и значениями для изменения
 // возвращает измененного пользователя и ошибку, если пользователя нет
-func (repo *AdminRepository) EditUser(ctx context.Context, userID string, editInfo map[string]string) (*domains.User, error) {
+func (repo *AdminRepository) editUser(ctx context.Context, e executor, userID string, editInfo map[string]string) (*domains.User, error) {
 	allowed := map[string]bool{"login": true, "full_name": true, "position": true, "role": true}
 	// Собираем части SET и аргументы
 	setClauses := make([]string, 0, len(editInfo))
@@ -318,7 +318,7 @@ func (repo *AdminRepository) EditUser(ctx context.Context, userID string, editIn
 	var user domains.User
 
 	// передаем строку, запрос вместе с параметрами
-	err := repo.pool.QueryRow(ctx, sqlQuery, args...).Scan(
+	err := e.QueryRow(ctx, sqlQuery, args...).Scan(
 		&user.ID,
 		&user.Login,
 		&user.FullName,
@@ -335,6 +335,15 @@ func (repo *AdminRepository) EditUser(ctx context.Context, userID string, editIn
 
 	return &user, nil
 }
+
+func (repo *AdminRepository) EditUser(ctx context.Context, userID string, editInfo map[string]string) (*domains.User, error) {
+	return repo.editUser(ctx, repo.pool, userID, editInfo)
+}
+
+func (repo *AdminRepository) EditUserTx(ctx context.Context, e executor, userID string, editInfo map[string]string) (*domains.User, error) {
+	return repo.editUser(ctx, e, userID, editInfo)
+}
+
 
 // принимает хеш пароля
 // меняет его и возвращает ошибку
@@ -785,4 +794,31 @@ func (repo *AdminRepository) AreUsersInSameGroup(ctx context.Context, callerID, 
         return false, fmt.Errorf("check common group: %w", err)
     }
     return exists, nil
+}
+
+// ======================================================================================
+// ---------------- ОТЗЫВ ВСЕХ СЕССИЙ ПРИ УДАЛЕНИИ ИЛИ ИЗМЕНЕНИИ РОЛИ -------------------
+// ======================================================================================
+
+// транзакции пока не требуются для этой функции, так что не делаем оберток
+// отзывает все активные сессии пользователя, устанавливая revoked_at = NOW()
+// Принимает userID и ошибку при проблемах с БД
+func (repo *AdminRepository) revokeAllUserSessions(ctx context.Context, e executor, userID string) error {
+    query := `
+        UPDATE sessions
+        SET revoked_at = NOW()
+        WHERE user_id = $1 AND revoked_at IS NULL
+    `
+    _, err := e.Exec(ctx, query, userID)
+    if err != nil {
+        return error_type.NewInternal(fmt.Errorf("revoke all user sessions: %w", err))
+    }
+    return nil
+}
+
+func (repo *AdminRepository) RevokeAllUserSessions(ctx context.Context, userID string) error {
+	return repo.revokeAllUserSessions(ctx, repo.pool, userID)
+}
+func (repo *AdminRepository) RevokeAllUserSessionsTx(ctx context.Context, e executor, userID string) error {
+	return repo.revokeAllUserSessions(ctx, e, userID)
 }

@@ -104,6 +104,25 @@ func (repo *AuthRepo) GetAuthCredentials(ctx context.Context, login string) (*do
     return &info, nil
 }
 
+// получает роль пользователя по его ID
+func (repo *AuthRepo) GetUserRole(ctx context.Context, userID string) (string, error) {
+    sqlQuery := `
+        SELECT role
+        FROM users
+        WHERE id = $1;
+    `
+	var role string
+    err := repo.pool.QueryRow(ctx, sqlQuery, userID).Scan(
+		&role, 
+	)
+    if errors.Is(err, pgx.ErrNoRows) { // специальный тип ошибки, если ничего не вернулось
+        return "", error_type.NewUnauthorized("user not found") // пользователь не найден
+    } else if err != nil {
+        return "", error_type.NewInternal(fmt.Errorf("get auth credentials: %w", err))
+    }
+    return role, nil
+}
+
 
 // принимает jti рефреш токена
 // получает информацию о сессии
@@ -182,7 +201,7 @@ func (repo *AuthRepo) RevokeSessionTx(ctx context.Context, tx pgx.Tx, jti string
 func (repo *AuthRepo) UpdateTempPassword(ctx context.Context, callerID, passwordHash string) error {
 	sqlQuery := `
 		UPDATE users
-		SET password_hash = $1
+		SET password_hash = $1, temporary_password = FALSE
 		WHERE id = $2;
 	`
 

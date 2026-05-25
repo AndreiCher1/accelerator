@@ -161,6 +161,13 @@ func (serv *AdminService) GetUsersService(ctx context.Context, callerID string, 
 // ======================== ИЗМЕНЕНИЕ ПОЛЬЗОВАТЕЛЯ =========================
 // возвращает пользователя и ошибку
 func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetID string, editInfo map[string]string) (*domains.User, error) {
+	// создаем транзакцию, так как у нас несколько операциЙ, изменение пользователя и возможное удаление всех сессий
+	tx, err := serv.repo.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("begin tx: %w", err))
+	}
+	defer tx.Rollback(ctx)
+
 	// получаем по ID из токена информацию о том, кто делает запрос
 	callerUser, err := serv.repo.SelectUserByID(ctx, callerID)
 	if err != nil { // если пользователь не найден, возвращаем ошибку
@@ -237,9 +244,19 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 	// передаем editInfo для изменения в репозиторий
 	// внутри репозитория динамически собираем запрос исходя из изменяемых аргументов
 	// до этого уже проверяли существование targetUser, поэтому можно опустить
-	editUser, err := serv.repo.EditUser(ctx, targetUser.ID, editInfo)
+	editUser, err := serv.repo.EditUserTx(ctx, tx, targetUser.ID, editInfo)
 	if err != nil {
 		return nil, err
+	}
+
+	// если была изменена роль, отзываем все сессии пользователя
+	if editInfo["role"] != "" { // значение по умолчанию, если не было передано
+		serv.repo.RevokeAllUserSessionsTx(ctx, tx, callerID)
+	}
+
+	// фиксируем изменения
+	if err := tx.Commit(ctx); err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("commit tx: %w", err))
 	}
 
 	// репозиторий возвращает доменную структуру, сразу ее возвращаем в транспорт
@@ -412,7 +429,7 @@ func (serv *AdminService) CreateGroupService(ctx context.Context, callerID, name
 		return nil, err
 	}
 	if callerUser.Role != "creator" {
-		return nil, error_type.NewForbidden()
+		return nil, error_type.NewNotFound("Страница не найдена")
 	}
 
 	// 2. Если передан ownerID, валидируем его
@@ -502,7 +519,7 @@ func (serv *AdminService) GetMembersGroupService(ctx context.Context, callerID, 
 	}
 
 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-		return nil, nil, error_type.NewForbidden()
+		return nil, nil, error_type.NewNotFound("Страница не найдена")
 	}
 
 	var users *[]domains.User
@@ -547,7 +564,7 @@ func (serv *AdminService) GetGroupsService(ctx context.Context, callerID string)
 	}
 
 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-		return nil, error_type.NewForbidden()
+		return nil, error_type.NewNotFound("Страница не найдена")
 	}
 
 	var groups *[]domains.Group
@@ -602,14 +619,14 @@ func (serv *AdminService) EditGroupService(ctx context.Context, callerID, groupI
 	case "admin":
 		// админ может редактировать только свои группы
 		if groupInfo.OwnerID != callerID {
-			return nil, error_type.NewForbidden()
+			return nil, error_type.NewNotFound("группа не найдена")
 		}
 		// и только название / описание; попытка сменить владельца запрещена
 		if _, exists := editInfo["owner_id"]; exists {
 			return nil, error_type.NewForbidden()
 		}
 	default:
-		return nil, error_type.NewForbidden()
+		return nil, error_type.NewNotFound("Страница не найдена")
 	}
 
 	// 4. Если передано поле owner_id (только creator)
@@ -699,7 +716,7 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 		return err
 	}
 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-		return error_type.NewForbidden()
+		return error_type.NewNotFound("Страница не найдена")
 	}
 
 	targetUser, err := serv.getUserByID(ctx, targetID)
@@ -769,7 +786,7 @@ func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, 
 		return err
 	}
 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-		return error_type.NewForbidden()
+		return error_type.NewNotFound("Страница не найдена")
 	}
 
 	targetUser, err := serv.getUserByID(ctx, targetID)
@@ -829,7 +846,7 @@ func (serv *AdminService) DeleteGroupService(ctx context.Context, callerID, grou
 		return err
 	}
 	if callerUser.Role != "creator" {
-		return error_type.NewForbidden()
+		return error_type.NewNotFound("Страница не найдена")
 	}
 
 	// Проверяем существование группы
