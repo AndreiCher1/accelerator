@@ -7,7 +7,7 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - HF_TOKEN=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
+      - HF_TOKEN=""
     volumes:
       - ./models:/app/models
       - ./app:/app/src
