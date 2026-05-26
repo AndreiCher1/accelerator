@@ -19,6 +19,7 @@ type MinIOClient struct {
 
 // создаёт новый экземпляр клиента и проверяет/создаёт бакет
 func NewMinIOClient(endpoint, accessKey, secretKey, bucket string, useSSL bool) (*MinIOClient, error) {
+    // передаем сюда название и порт контейнера, в котором запущен minio в одной сети
     client, err := minio.New(endpoint, &minio.Options{
 		// передаем при создании наши секретные ключи из конфига
 		// access - имя поьзователя, secret - пароль

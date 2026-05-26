@@ -334,13 +334,10 @@ func (trans *TasksTransport) processUpload(
 		} else {
 			// когда успешно вычислятся длительность и загрузится в s3, тогда добавляем ссылку в бд и длительность
 			// также обновляем статус задачи, ожидает деноизинга
-			// также меняем объектные ключи
-			NewInputKey := objectKey
-			NewOutputKey := config.DenoisedKey(groupID, taskID)
 
 			if err := trans.serv.UpdateTaskSuccessUploadService(
 				ctx, callerID, taskID, objectKey,
-				duration, string(domains.StatusPendingDenoise), NewInputKey, NewOutputKey,
+				duration, string(domains.StatusPendingDenoise),
 			); err != nil {
 				slog.Error("Не удалось обновить статус задачи после успешной загрузки", "taskID", taskID, "error", err)
 				// Также можно попытаться перевести в error

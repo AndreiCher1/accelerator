@@ -11,8 +11,6 @@ CREATE TABLE tasks (
     duration INTEGER, -- загружается после в горутине, поэтому можетт быть NULL
     status VARCHAR(50) NOT NULL,
     result_json JSONB,
-    current_input_key TEXT, -- ссылка на результат для текущего этапа (откуда загружать для начала обработки)
-    current_output_key TEXT, -- ссылка на конечный результат (для загрузки)
     stage_entered_at TIMESTAMP WITH TIME ZONE DEFAULT now(), -- последнее изменение статуса задачи для формулы приоритета
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now(), -- время создания задачи
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(), -- фиксация любого изменения, служебное поле

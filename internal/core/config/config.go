@@ -28,6 +28,7 @@ type Config struct {
 	GeneratePasswordLength int
 	LimitUploadAudio       time.Duration
 	MaxUploadWorkers       int
+	AIWorkersTimeoutHour   time.Duration
 
 	TotalVRAMGB int
 	TotalRAMGB  int
@@ -59,9 +60,10 @@ func LoadConfig() *Config {
 		GeneratePasswordLength: getEnvInt("GENERATE_PASSWORD_LENGTH", 10),
 		LimitUploadAudio:       getEnvDuration("LIMIT_UPLOAD_AUDIO_MINUTE", 30) * time.Minute,
 		MaxUploadWorkers:       getEnvInt("MAX_UPLOAD_WORKERS", 20),
+		AIWorkersTimeoutHour:   getEnvDuration("AI_WORKERS_HTTP_TIMEOUT_HOURS", 2) * time.Hour,
 
 		TotalVRAMGB: getEnvInt("TOTAL_VRAM_GB", 12),
-		TotalRAMGB: getEnvInt("TOTAL_RAM_GB", 16),
+		TotalRAMGB:  getEnvInt("TOTAL_RAM_GB", 16),
 	}
 
 }
@@ -120,7 +122,7 @@ func getEnvStringSlice(key string, default_value []string) []string {
 		for _, part := range valueSlice {
 			// Удаляем лишние пробелы по краям
 			trimmed := strings.TrimSpace(part)
-			
+
 			cleaned = append(cleaned, trimmed)
 		}
 
@@ -128,5 +130,5 @@ func getEnvStringSlice(key string, default_value []string) []string {
 
 	}
 
-	return  default_value
+	return default_value
 }

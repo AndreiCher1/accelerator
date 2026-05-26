@@ -84,31 +84,6 @@ func (repo *TasksRepo) CheckGroup(ctx context.Context, groupID string) (bool, er
 	return check, nil
 }
 
-// ================================== ИЗМЕНЕНИЕ КЛЮЧЕЙ S3 ЗАДАЧИ ===================================
-
-func (repo *TasksRepo) updateObjectKeys(ctx context.Context, e executor, taskID, inputKey, outputKey string) error {
-	sqlQuery := `
-		UPDATE tasks SET current_input_key = $1, current_output_key = $2, updated_at = NOW()
-		WHERE id = $3;
-	`
-	result, err := e.Exec(ctx, sqlQuery, inputKey, outputKey, taskID)
-	if err != nil {
-		return error_type.NewInternal(fmt.Errorf("update object kets task: %w", err))
-	}
-
-	if !result.Update() { // возвращает false, если строка не была обновлена
-		return error_type.NewNotFound("Задача не найдена")
-	}
-
-	return nil
-}
-
-func (repo *TasksRepo) UpdateObjectKeys(ctx context.Context, taskID, inputKey, outputKey string) error {
-	return repo.updateObjectKeys(ctx, repo.pool, taskID, inputKey, outputKey)
-}
-func (repo *TasksRepo) UpdateObjectKeysTx(ctx context.Context, e executor, taskID, inputKey, outputKey string) error {
-	return repo.updateObjectKeys(ctx, e, taskID, inputKey, outputKey)
-}
 
 // ================================== ИЗМЕНЕНИЕ СТАТУСА ЗАДАЧИ ===================================
 
@@ -152,6 +127,24 @@ func (repo *TasksRepo) UpdateTaskSuccessUpload(ctx context.Context, taskID, file
 func (repo *TasksRepo) UpdateTaskSuccessUploadTx(ctx context.Context, e executor, taskID, filePath string, duration int, newStatus string) error {
 	return repo.updateTaskSuccessUpload(ctx, e, taskID, filePath, duration, newStatus)
 }
+
+// обновляет result_json и завершает задачу (completed_at)
+// использовать только при status == done
+func (r *TasksRepo) UpdateTaskResult(ctx context.Context, taskID string, resultJSON []byte) error {
+    query := `
+        UPDATE tasks
+        SET result_json = $1,
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $2;
+    `
+    _, err := r.pool.Exec(ctx, query, resultJSON, taskID)
+    if err != nil {
+        return fmt.Errorf("update task status and result: %w", err)
+    }
+    return nil
+}
+
 // ================================== ПОЛУЧЕНИЕ СТАТУСА ЗАДАЧИ ===================================
 
 func (repo *TasksRepo) SelectTaskStatus(ctx context.Context, taskID string) (string, error) {
@@ -204,6 +197,74 @@ func (repo *TasksRepo) GetQueuePosition(ctx context.Context, status, taskID stri
 		return 0, error_type.NewInternal(fmt.Errorf("get queue position: %w", err))
 	}
 	return position, nil
+}
+
+// транзакционная функция, сначала получает информация о задаче, потом изменяет ее статус на процессинг
+func (r *TasksRepo) ClaimNextTask(ctx context.Context, statusPending, statusProcessing string) (*domains.Task, error) {
+    tx, err := r.pool.Begin(ctx)
+    if err != nil {
+        return nil, err
+    }
+    defer tx.Rollback(ctx)
+
+    query := `
+        SELECT id, user_id, group_id, task_name, description, meeting_date,
+               pattern_id, file_path, file_name, duration, status, result_json,
+               asr_model, llm_model, created_at, updated_at, started_at, completed_at
+        FROM tasks
+        WHERE status = $1
+        ORDER BY ((EXTRACT(EPOCH FROM (NOW() - created_at)) * 0.2 + EXTRACT(EPOCH FROM (NOW() - stage_entered_at)) * 1.0) / NULLIF(duration, 1)) DESC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+    `
+
+	var (
+		task        domains.Task
+		filePath    *string
+		duration    *int
+		startedAt   *time.Time
+		completedAt *time.Time
+	)
+
+    err = tx.QueryRow(ctx, query, statusPending).Scan(
+        &task.TaskID, &task.UserID, &task.GroupID, &task.TaskName, &task.Description, &task.MeetingDate,
+        &task.PatternID, &filePath, &task.FileName, &duration, &task.Status, &task.ResultJson,
+   		&task.CreatedAt, &task.UpdatedAt, &startedAt, &completedAt,
+    )
+    if err != nil {
+        if errors.Is(err, pgx.ErrNoRows) {
+            return nil, error_type.NewNotFound("no pending tasks")
+        }
+        return nil, error_type.NewInternal(fmt.Errorf("select next tasks in queue: %w", err))
+    }
+
+	// Обработка nullable полей
+	if filePath != nil {
+		task.FilePath = *filePath
+	}
+	if duration != nil {
+		task.Duration = *duration
+	}
+	if startedAt != nil {
+		task.StartedAt = *startedAt
+	}
+	if completedAt != nil {
+		task.CompletedAt = *completedAt
+	}
+
+	// обновляем статус задачи, чтобы другая горутина уже не могла ее взять
+    _, err = tx.Exec(ctx, `UPDATE tasks SET status = $1, started_at = NOW(), stage_entered_at = NOW() WHERE id = $2;`, statusProcessing, task.TaskID)
+    if err != nil {
+        return nil, error_type.NewInternal(fmt.Errorf("update next tasks in queue: %w", err))
+    }
+
+    if err := tx.Commit(ctx); err != nil {
+        return nil, err
+    }
+
+    task.Status = statusProcessing
+
+    return &task, nil
 }
 
 // ==================================== СОЗДАНИЕ ЗАДАЧИ ==========================================
@@ -556,6 +617,21 @@ func (repo *TasksRepo) CheckUserInTaskGroup(ctx context.Context, userID, taskID 
 	err := repo.pool.QueryRow(ctx, query, taskID, userID).Scan(&exists)
 	if err != nil {
 		return false, error_type.NewInternal(fmt.Errorf("check user in task group: %w", err))
+	}
+	return exists, nil
+}
+
+
+// проверяет, есть ли хоть одна задача с нужным статусом, чттобы запустить воркер
+func (repo *TasksRepo) HasPendingTasks(ctx context.Context, status string) (bool, error) {
+	sqlQuery := `
+		SELECT EXISTS (SELECT 1 FROM tasks WHERE status = $1 LIMIT 1)
+	`
+
+	var exists bool
+	err := repo.pool.QueryRow(ctx, sqlQuery, status).Scan(&exists)
+	if err != nil {
+		return false, error_type.NewInternal(fmt.Errorf("has tasks with status: %w", err))
 	}
 	return exists, nil
 }

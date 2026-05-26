@@ -47,6 +47,8 @@ import (
 для всего остального оставить получение пользователя из бд по ID. Сделать отзыв всех сессий при удалении пользователя и изменении роли.
 
 сделать единый мапинг для всех сообщений, которые передаются на клиент
+
+// сделать удаление записей с s3 при удалении задачи
 */
 
 
@@ -73,19 +75,13 @@ func main() {
 		slog.Error("Ошибка при инициализации клиента minio:", "err", err)
 	}
 
-	// инициализация менеджера ресурсов
-	resourceManager := worker.NewGPUManager(
-		cfg.TotalVRAMGB,
-		cfg.TotalRAMGB,
-	)
-
-	_ = resourceManager
-
 	pool, err := pgxpool.New(context.Background(), cfg.DBDSN) // создаем пул соединений
 	defer func() { pool.Close() }()                           // перед завершением работы закрываем соединение с базой данных
 	if err != nil {
 		slog.Error("Не удалось создать пул соединений с базой данных:", "err", err)
 	}
+
+	// инициализируем все модули приложения
 
 	adminRepo := adminRepository.NewAdminRepository(pool)
 	adminServ := adminService.NewAdminService(adminRepo, cfg)
@@ -104,6 +100,33 @@ func main() {
 	// создаем семафор для хэндлера загрузки
 	uploadChanWorkers := make(chan struct{}, cfg.MaxUploadWorkers)
 	tasksTrans := tasksTransport.NewTasksTransport(tasksServ, minioClient, uploadChanWorkers, validate, cfg)
+
+
+	// ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ
+
+	// загружаем конфиг этапов обработки
+	stageConfig := *config.LoadStageConfig()
+
+	// создаем контекст, который завершает все приложение без паники
+	// потому что весь pipeline и менеджер ресурсов завершаются при завершении контекста
+	pipelineContext, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+	}()
+
+	// инициализация менеджера ресурсов
+	resourceManager := worker.NewResourceManager(
+		cfg.TotalVRAMGB,
+		cfg.TotalRAMGB,
+	)
+	// создаем экземпляр конфига для основного воркера
+	orchestrator := worker.NewOrchestrator(
+		tasksRepo, minioClient, cfg, resourceManager, stageConfig, 
+	)
+
+	// запускаем основной цикл обработки для всех статусов и передаем контекст
+	orchestrator.Run(pipelineContext)
+
 
 	if err := server.StartNewChiServer(adminTrans, authTrans, patternsTrans, tasksTrans, cfg); err != nil {
 		slog.Error("Ошибка при работе HTTP сервера:", "err", err)

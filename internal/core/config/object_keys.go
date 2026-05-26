@@ -19,12 +19,12 @@ func DenoisedKey(groupID, taskID string) string {
 }
 
 func TranscriptKey(groupID, taskID string) string {
-	return fmt.Sprintf(DenoisedKeyFmt, groupID, taskID)
+	return fmt.Sprintf(TranscriptKeyFmt, groupID, taskID)
 }
 func DiarizationKey(groupID, taskID string) string {
-	return fmt.Sprintf(DenoisedKeyFmt, groupID, taskID)
+	return fmt.Sprintf(DiarizationKeyFmt, groupID, taskID)
 }
 func SummaryKey(groupID, taskID string) string {
-	return fmt.Sprintf(DenoisedKeyFmt, groupID, taskID)
+	return fmt.Sprintf(SummaryKeyFmt, groupID, taskID)
 }
 

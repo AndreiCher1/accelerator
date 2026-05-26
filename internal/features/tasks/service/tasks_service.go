@@ -7,9 +7,7 @@ import (
 	"accelerator/internal/domains"
 	"accelerator/internal/features/tasks/repository"
 	"context"
-	"fmt"
-
-	"github.com/jackc/pgx/v5"
+	"math"
 )
 
 type TasksService struct {
@@ -77,8 +75,8 @@ func (serv *TasksService) UploadTaskService(
 // - количество человек в очереди с высшим приоритетом (при ожидании процесса),
 // - примерное время ожидания (для начатого процесса) в минутах
 func (serv *TasksService) GetTaskStatusService(ctx context.Context, callerID, taskID string) (*domains.TaskCheck, error) {
-	// получаем статус задачи, а заодно и проверяем ее существование
-	status, err := serv.repo.SelectTaskStatus(ctx, taskID)
+	// проверка существования задачи и получение задачи
+	taskInfo, err := serv.repo.SelectTaskByID(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +91,7 @@ func (serv *TasksService) GetTaskStatusService(ctx context.Context, callerID, ta
 	}
 
 	// получаем объект конвеера и флаг, процесс или ожидание
-	currentStatus := domains.TaskStatus(status)
+	currentStatus := domains.TaskStatus(taskInfo.Status)
 	isProcessing := currentStatus.IsProcessing()
 
 	// динамические переменные, по умолчанию 0
@@ -102,19 +100,21 @@ func (serv *TasksService) GetTaskStatusService(ctx context.Context, callerID, ta
 
 	// получаем количество в очереди до нас если статус ожидания
 	if !isProcessing {
-		queueCountBefore, err = serv.repo.GetQueuePosition(ctx, status, taskID)
+		queueCountBefore, err = serv.repo.GetQueuePosition(ctx, taskInfo.Status, taskID)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	// если идет процесс, получаем его примерную длительность !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	// если идет процесс, получаем его примерную длительность
 	if isProcessing {
-
+		approximateLeadTimeProcess = int(math.Ceil(
+			float64(taskInfo.Duration) / 60 / float64(config.MinutesOfAudioPerMinuteOfProcessing[string(currentStatus)]),
+		))
 	}
 
 	statusCheck := domains.TaskCheck{
-		Status:                     status,
+		Status:                     taskInfo.Status,
 		IsProcess:                  isProcessing,
 		InTheQueueBefore:           queueCountBefore,
 		ApproximateLeadTimeProcess: approximateLeadTimeProcess,
@@ -246,23 +246,10 @@ func (serv *TasksService) UpdateTaskStatusService(ctx context.Context, callerID,
 	return nil
 }
 
-func (serv *TasksService) UpdateTaskSuccessUploadService(ctx context.Context, callerID, taskID, filePath string, duration int, newStatus, inputKey, outputKey string) error {
-	tx, err := serv.repo.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return error_type.NewInternal(fmt.Errorf("begin tx: %w", err))
-	}
-	defer tx.Rollback(ctx)
-
-	if err := serv.repo.UpdateTaskSuccessUploadTx(ctx, tx, taskID, filePath, duration, newStatus); err != nil {
+// обновляет duration и ссылку на файл в s3
+func (serv *TasksService) UpdateTaskSuccessUploadService(ctx context.Context, callerID, taskID, filePath string, duration int, newStatus string) error {
+	if err := serv.repo.UpdateTaskSuccessUpload(ctx, taskID, filePath, duration, newStatus); err != nil {
 		return err
-	}
-
-	if err := serv.repo.UpdateObjectKeysTx(ctx, tx, taskID, inputKey, outputKey); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return error_type.NewInternal(fmt.Errorf("commit tx: %w", err))
 	}
 
 	return nil

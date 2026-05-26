@@ -350,7 +350,7 @@ func (repo *AdminRepository) EditUserTx(ctx context.Context, e executor, userID 
 func (repo *AdminRepository) ResetPassword(ctx context.Context, userID, newPasswordHash string) error {
 	sqlQuery := `
 	UPDATE users
-	SET password_hash = $1
+	SET password_hash = $1, temporary_password = TRUE
 	WHERE id = $2;
 	`
 	if _, err := repo.pool.Exec(ctx, sqlQuery, newPasswordHash, userID); err != nil {
