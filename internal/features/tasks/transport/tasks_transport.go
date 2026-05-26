@@ -49,7 +49,7 @@ func NewTasksTransport(serv *service.TasksService, minio *storage.MinIOClient, u
 
 // ======================================== ЗАГРУЗКА АУДИО И СОЗДАНИЕ ЗАДАЧИ ==========================================
 
-// POST api/v1/tasks/upload
+// POST api/v1/tasks/upload/{groupID}
 func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request) {
 
 	// ------------------------------------> СОЗДАНИЕ КОНТЕКСТА И ВАЛИДАЦИЯ ID <------------------------------------------
@@ -476,7 +476,7 @@ func (trans *TasksTransport) GetTaskHandle(w http.ResponseWriter, r *http.Reques
 
 // ===================================== ПОЛУЧЕНИЕ ВСЕХ ЗАДАЧ В ГРУППЕ ==========================================
 
-// GET api/v1/tasks/{groupID}
+// GET api/v1/tasks/{groupID}/all
 func (trans *TasksTransport) GetAllTaskInGroupHandle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	callerID, ok := authctx.GetUserID(ctx)

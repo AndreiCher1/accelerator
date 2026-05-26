@@ -89,7 +89,7 @@ func StartNewChiServer(
 		router.Route("/tasks", func(router chi.Router) {
 			router.Use(middleware.AuthMiddleware(cfg))
 			// загрузка аудио и прочей информации для транскрибации
-			router.Post("/upload", tasksTrans.UploadHandle)
+			router.Post("/upload/{groupID}", tasksTrans.UploadHandle)
 			// для получения информации о статусе выполнения задачи,
 			// такой как статус, в процессе или нет, колическтво человек в очереди перед ним и примерное время ожидания
 			router.Get("/{taskID}/status", tasksTrans.CheckStatusTaskHandle)
@@ -97,7 +97,7 @@ func StartNewChiServer(
 			// в том числе флаги для изменения
 			router.Get("/{taskID}", tasksTrans.GetTaskHandle)
 			// получает все задачи с флагами изменения, доступные в группе со всеми статусами
-			router.Get("/{groupID}", tasksTrans.GetAllTaskInGroupHandle)
+			router.Get("/{groupID}/all", tasksTrans.GetAllTaskInGroupHandle)
 			// изменение информации о задаче, если статус Done, 
 			// возвращет измененную задачу, а также флаг для изменения
 			router.Put("/{taskID}", tasksTrans.EditTaskHandle)
