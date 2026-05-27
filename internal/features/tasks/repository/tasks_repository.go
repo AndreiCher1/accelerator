@@ -4,6 +4,7 @@ import (
 	"accelerator/internal/core/error_type"
 	"accelerator/internal/domains"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -84,7 +85,6 @@ func (repo *TasksRepo) CheckGroup(ctx context.Context, groupID string) (bool, er
 	return check, nil
 }
 
-
 // ================================== ИЗМЕНЕНИЕ СТАТУСА ЗАДАЧИ ===================================
 
 func (repo *TasksRepo) UpdateTaskStatus(ctx context.Context, taskID, statusTask string) error {
@@ -131,18 +131,18 @@ func (repo *TasksRepo) UpdateTaskSuccessUploadTx(ctx context.Context, e executor
 // обновляет result_json и завершает задачу (completed_at)
 // использовать только при status == done
 func (r *TasksRepo) UpdateTaskResult(ctx context.Context, taskID string, resultJSON []byte) error {
-    query := `
+	query := `
         UPDATE tasks
         SET result_json = $1,
             completed_at = NOW(),
             updated_at = NOW()
         WHERE id = $2;
     `
-    _, err := r.pool.Exec(ctx, query, resultJSON, taskID)
-    if err != nil {
-        return fmt.Errorf("update task status and result: %w", err)
-    }
-    return nil
+	_, err := r.pool.Exec(ctx, query, resultJSON, taskID)
+	if err != nil {
+		return fmt.Errorf("update task status and result: %w", err)
+	}
+	return nil
 }
 
 // ================================== ПОЛУЧЕНИЕ СТАТУСА ЗАДАЧИ ===================================
@@ -201,13 +201,13 @@ func (repo *TasksRepo) GetQueuePosition(ctx context.Context, status, taskID stri
 
 // транзакционная функция, сначала получает информация о задаче, потом изменяет ее статус на процессинг
 func (r *TasksRepo) ClaimNextTask(ctx context.Context, statusPending, statusProcessing string) (*domains.Task, error) {
-    tx, err := r.pool.Begin(ctx)
-    if err != nil {
-        return nil, err
-    }
-    defer tx.Rollback(ctx)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 
-    query := `
+	query := `
         SELECT id, user_id, group_id, task_name, description, meeting_date,
                pattern_id, file_path, file_name, duration, status, result_json,
                asr_model, llm_model, created_at, updated_at, started_at, completed_at
@@ -226,17 +226,17 @@ func (r *TasksRepo) ClaimNextTask(ctx context.Context, statusPending, statusProc
 		completedAt *time.Time
 	)
 
-    err = tx.QueryRow(ctx, query, statusPending).Scan(
-        &task.TaskID, &task.UserID, &task.GroupID, &task.TaskName, &task.Description, &task.MeetingDate,
-        &task.PatternID, &filePath, &task.FileName, &duration, &task.Status, &task.ResultJson,
-   		&task.CreatedAt, &task.UpdatedAt, &startedAt, &completedAt,
-    )
-    if err != nil {
-        if errors.Is(err, pgx.ErrNoRows) {
-            return nil, error_type.NewNotFound("no pending tasks")
-        }
-        return nil, error_type.NewInternal(fmt.Errorf("select next tasks in queue: %w", err))
-    }
+	err = tx.QueryRow(ctx, query, statusPending).Scan(
+		&task.TaskID, &task.UserID, &task.GroupID, &task.TaskName, &task.Description, &task.MeetingDate,
+		&task.PatternID, &filePath, &task.FileName, &duration, &task.Status, &task.ResultJson,
+		&task.CreatedAt, &task.UpdatedAt, &startedAt, &completedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, error_type.NewNotFound("no pending tasks")
+		}
+		return nil, error_type.NewInternal(fmt.Errorf("select next tasks in queue: %w", err))
+	}
 
 	// Обработка nullable полей
 	if filePath != nil {
@@ -253,18 +253,18 @@ func (r *TasksRepo) ClaimNextTask(ctx context.Context, statusPending, statusProc
 	}
 
 	// обновляем статус задачи, чтобы другая горутина уже не могла ее взять
-    _, err = tx.Exec(ctx, `UPDATE tasks SET status = $1, started_at = NOW(), stage_entered_at = NOW() WHERE id = $2;`, statusProcessing, task.TaskID)
-    if err != nil {
-        return nil, error_type.NewInternal(fmt.Errorf("update next tasks in queue: %w", err))
-    }
+	_, err = tx.Exec(ctx, `UPDATE tasks SET status = $1, started_at = NOW(), stage_entered_at = NOW() WHERE id = $2;`, statusProcessing, task.TaskID)
+	if err != nil {
+		return nil, error_type.NewInternal(fmt.Errorf("update next tasks in queue: %w", err))
+	}
 
-    if err := tx.Commit(ctx); err != nil {
-        return nil, err
-    }
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 
-    task.Status = statusProcessing
+	task.Status = statusProcessing
 
-    return &task, nil
+	return &task, nil
 }
 
 // ==================================== СОЗДАНИЕ ЗАДАЧИ ==========================================
@@ -278,7 +278,7 @@ func (repo *TasksRepo) CreateTask(
 	sqlQuery := `
 	INSERT INTO tasks (user_id, group_id, task_name, description, meeting_date, pattern_id, file_path, file_name, status)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	RETURNING id, group_id, task_name, description, meeting_date, pattern_id, file_name, status, created_at
+	RETURNING id, group_id, task_name, description, meeting_date::text, pattern_id, file_name, status, created_at
 	`
 	var task domains.Task
 
@@ -311,7 +311,7 @@ func (repo *TasksRepo) CreateTask(
 func (repo *TasksRepo) SelectTaskByID(ctx context.Context, taskID string) (*domains.Task, error) {
 	query := `
         SELECT 
-            id, user_id, group_id, task_name, description, meeting_date,
+            id, user_id, group_id, task_name, description, meeting_date::text,
             pattern_id, file_path, file_name, duration, status, result_json,
             stage_entered_at, created_at, updated_at, started_at, completed_at
         FROM tasks
@@ -378,7 +378,7 @@ func (repo *TasksRepo) GetTasksByGroupID(ctx context.Context, groupID string, pa
 
 	// Базовый запрос без пагинации
 	baseQuery := `
-        SELECT id, user_id, group_id, task_name, description, meeting_date,
+        SELECT id, user_id, group_id, task_name, description, meeting_date::text,
                pattern_id, file_path, file_name, duration, status, result_json,
                stage_entered_at, created_at, updated_at, started_at, completed_at
         FROM tasks
@@ -518,7 +518,7 @@ func (repo *TasksRepo) EditTask(ctx context.Context, taskID string, editInfo map
 	query := fmt.Sprintf(`
         UPDATE tasks SET %s, updated_at = NOW()
         WHERE id = $%d
-        RETURNING id, user_id, group_id, task_name, description, meeting_date,
+        RETURNING id, user_id, group_id, task_name, description, meeting_date::text,
         	pattern_id, file_path, file_name, duration, status, result_json,
         	stage_entered_at, created_at, updated_at, started_at, completed_at;
     `, strings.Join(setClauses, ", "), i)
@@ -595,6 +595,52 @@ func (repo *TasksRepo) DeleteTask(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// ================================= ПОЛУЧЕНИЕ ПРОМПТОВ ПО ID ====================================
+
+// SelectPromptsByTaskID возвращает prompt и additional_prompt из шаблона, привязанного к задаче.
+// Если задача не найдена, возвращается error_type.NewNotFound.
+// Если задача существует, но у неё нет назначенного шаблона, также возвращается error_type.NewNotFound.
+func (repo *TasksRepo) SelectPromptsByTaskID(ctx context.Context, taskID string) (*domains.TaskPatternPrompts, error) {
+	query := `
+        SELECT p.summary_prompt, p.additional_prompt
+        FROM tasks t
+        JOIN patterns p ON t.pattern_id = p.id
+        WHERE t.id = $1
+    `
+
+	var (
+		prompts          domains.TaskPatternPrompts
+		additionalPrompt []byte
+	)
+
+	err := repo.pool.QueryRow(ctx, query, taskID).Scan(
+		&prompts.Prompt,
+		&additionalPrompt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Уточняем причину: несуществующая задача или отсутствие шаблона
+			var exists bool
+			checkQuery := `SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1)`
+			errCheck := repo.pool.QueryRow(ctx, checkQuery, taskID).Scan(&exists)
+			if errCheck != nil {
+				return nil, error_type.NewInternal(fmt.Errorf("проверка существования задачи: %w", errCheck))
+			}
+			if !exists {
+				return nil, error_type.NewNotFound("задача не найдена")
+			}
+			return nil, error_type.NewNotFound("шаблон для задачи не назначен")
+		}
+		return nil, error_type.NewInternal(fmt.Errorf("получение промптов по задаче: %w", err))
+	}
+
+	if additionalPrompt != nil {
+		prompts.AdditionalPrompt = json.RawMessage(additionalPrompt)
+	}
+
+	return &prompts, nil
+}
+
 // ======================================= ПРОВЕРКИ ==============================================
 
 // проверяет, состоит ли пользователь в группе, к которой привязана задача
@@ -620,7 +666,6 @@ func (repo *TasksRepo) CheckUserInTaskGroup(ctx context.Context, userID, taskID 
 	}
 	return exists, nil
 }
-
 
 // проверяет, есть ли хоть одна задача с нужным статусом, чттобы запустить воркер
 func (repo *TasksRepo) HasPendingTasks(ctx context.Context, status string) (bool, error) {

@@ -43,6 +43,13 @@ type TaskCheck struct {
 	ApproximateLeadTimeProcess int
 }
 
+// содержит prompt и additional_prompt, полученные по задаче.
+type TaskPatternPrompts struct {
+    Prompt           string
+    AdditionalPrompt json.RawMessage
+}
+
+
 // создаем конечный автомат жизненного цикла задачи
 type TaskStatus string
 

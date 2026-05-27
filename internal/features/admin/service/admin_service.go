@@ -28,7 +28,7 @@ func NewAdminService(repo *repository.AdminRepository, cfg *config.Config) *Admi
 
 // ====================================================== СОЗДАНИЕ КРЕАТОРА ==============================================
 
-func (serv *AdminService) AddCreatorService(ctx context.Context, login, password, fullname, position string) (*domains.User, error) {
+func (serv *AdminService) AddCreatorService(ctx context.Context, login, password, fullname, position string, isCheck bool) (*domains.User, error) {
 	// проверяем, если база данных пользователей пустая, значит можно создать креатора
 	isEmptyUsers, err := serv.repo.IsTableUsersEmpty(ctx)
 	if err != nil {
@@ -38,6 +38,20 @@ func (serv *AdminService) AddCreatorService(ctx context.Context, login, password
 	// если она не пустая, то запрещаем доступ и кидаем 404
 	if !isEmptyUsers {
 		return nil, error_type.NewNotFound("Страница не найдена")
+	}
+
+	// если есть флаг теста, значит надо только узнать, есть ли креатор или нет
+	// возвращаем его же тестовые данные
+	if isCheck {
+		userInfo := domains.User{
+			ID:       uuid.New().String(),
+			Login:    login,
+			FullName: fullname,
+			Position: position,
+			Role:     "creator",
+		}
+
+		return &userInfo, nil
 	}
 
 	// хешируем его
@@ -80,7 +94,6 @@ func (serv *AdminService) RegisterNewUserService(ctx context.Context, callerID, 
 	if callerUser.Role != "creator" {
 		return nil, "", error_type.NewNotFound("Страница не найдена") // не раскрываем существование ресурса
 	}
-
 
 	// генерируем пароль
 	password, err := tools.GeneratePassword(serv.cfg)
@@ -125,7 +138,6 @@ func (serv *AdminService) GetUsersService(ctx context.Context, callerID string, 
 	if callerUser.Role != "creator" && callerUser.Role != "admin" {
 		return nil, 0, error_type.NewNotFound("Страница не найдена")
 	}
-
 
 	var users *[]domains.User
 	var countUser int64
@@ -189,7 +201,7 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 	if callerUser.Role == "admin" {
 		ok, err := serv.repo.AreUsersInSameGroup(ctx, callerID, targetID)
 		if err != nil {
-			return  nil, err
+			return nil, err
 		}
 
 		if !ok {
@@ -223,7 +235,7 @@ func (serv *AdminService) EditUserService(ctx context.Context, callerID, targetI
 		if isConflict { // не повышаем пользователя, если он состоит в группах, где назвачен админ или еще не назначен
 			return nil, error_type.NewConflict(
 				"Пользователь состоит в группах, где нет администратора или уже назначен другой администратор. " +
-                "Назначьте его владельцем этих групп (через редактирование группы) или удалите из них перед повышением.",
+					"Назначьте его владельцем этих групп (через редактирование группы) или удалите из них перед повышением.",
 			)
 		}
 	}
@@ -289,7 +301,7 @@ func (serv *AdminService) ResetPasswordService(ctx context.Context, callerID, ta
 	if callerUser.Role == "admin" {
 		ok, err := serv.repo.AreUsersInSameGroup(ctx, callerID, targetID)
 		if err != nil {
-			return  "", err
+			return "", err
 		}
 
 		if !ok {
@@ -467,7 +479,6 @@ func (serv *AdminService) CreateGroupService(ctx context.Context, callerID, name
 			return nil, err
 		}
 	}
-	
 
 	// 5. Добавляем в участники креатора и, если назначен, владельца
 	if err := serv.repo.InsertUserIntoGroupTx(ctx, tx, groupID, callerUser.ID); err != nil {
@@ -635,7 +646,7 @@ func (serv *AdminService) EditGroupService(ctx context.Context, callerID, groupI
 
 		switch newOwnerID {
 		case groupInfo.OwnerID: // нет изменений
-			delete(editInfo, "owner_id") 
+			delete(editInfo, "owner_id")
 		case "": // если передали пустой, снимаем владельца и ставим NULL
 			// === Снятие владельца ===
 			// Удаляем текущего владельца из участников (если он был)
@@ -731,9 +742,6 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 	}
 	_ = groupInfo
 
-
-	
-
 	// сначала ограничиваем доступ админу к id других пользователей
 	if callerUser.Role == "creator" {
 		// Креатор может добавить любого, кроме админа, админ добавляется в editGroup
@@ -747,7 +755,7 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 		if targetUser.Role != "user" {
 			return error_type.NewNotFound("пользователь не найден")
 		}
-		
+
 		// Админ должен состоять в группе
 		consists, err := serv.repo.IsUserIntoGroup(ctx, callerID, groupID)
 		if err != nil {
@@ -757,7 +765,6 @@ func (serv *AdminService) AddUserGroupService(ctx context.Context, callerID, tar
 			return error_type.NewNotFound("группа не найдена")
 		}
 	}
-
 
 	// Проверяем, не состоит ли уже в группе
 	already, err := serv.repo.IsUserIntoGroup(ctx, targetID, groupID)
@@ -819,14 +826,13 @@ func (serv *AdminService) DeleteUserGroupService(ctx context.Context, callerID, 
 		if !consists {
 			return error_type.NewNotFound("группа не найдена")
 		}
-	} 
+	}
 	// проверки для креатора
 
 	// Проверяем, что удаляемый пользователь не является владельцем группы
 	if groupInfo.OwnerID != "" && groupInfo.OwnerID == targetID {
 		return error_type.NewConflict("нельзя удалить владельца группы. Сначала назначьте нового владельца или удалите его")
 	}
-
 
 	// Удаляем (репозиторий проверит, что пользователь был в группе)
 	if err := serv.repo.DeleteUserFromGroup(ctx, groupID, targetID); err != nil {

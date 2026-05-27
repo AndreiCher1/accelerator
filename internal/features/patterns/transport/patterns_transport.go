@@ -78,10 +78,20 @@ func (trans *PatternsTransport) CreatePatternHandler(w http.ResponseWriter, r *h
 				newRequest.AdditionalPrompt = nil // пустой массив -> NULL
 			}
 		default:
-			tools.WriteError(w, error_type.NewBadRequest("additional_prompt должен быть объектом {}, массивом [] или null"))
+			tools.WriteError(w, error_type.NewBadRequest("additional_prompt должен быть массивом [] или null"))
 			return
 		}
+
+		// если json был не пустой, проверяем, что он соответствует нужному виду
+		if newRequest.AdditionalPrompt != nil {
+			if err := tools.ValidateAdditionalPrompt(newRequest.AdditionalPrompt); err != nil {
+				tools.WriteError(w, error_type.NewBadRequest(err.Error()))
+				return
+			}
+		}
+		
 	}
+
 
 	// вызыв сервиса для создания шаблона
 	newPattern, err := trans.serv.CreatePatternService(
@@ -380,6 +390,42 @@ func (trans *PatternsTransport) EditPattern(w http.ResponseWriter, r *http.Reque
 	}
 	// дополнительного промпта также может не быть
 	if newRequest.AdditionalPrompt != nil {
+		if len(*newRequest.AdditionalPrompt) == 0 || bytes.Equal(bytes.TrimSpace(*newRequest.AdditionalPrompt), []byte("null")) {
+			newRequest.AdditionalPrompt = nil
+		} else {
+			// если передавали, проверяем, что пришел валидный json в additional_prompt
+			var tmp interface{}
+			if err := json.Unmarshal(*newRequest.AdditionalPrompt, &tmp); err != nil {
+				tools.WriteError(w, error_type.NewBadRequest("невалидный json в additional_prompt"))
+				return
+			}
+			// Разрешаем только объект или массив
+			switch v := tmp.(type) {
+			case map[string]interface{}:
+				// нормализуем пустой объект {} до nil, чтобы в бд было NULL
+				if len(v) == 0 {
+					newRequest.AdditionalPrompt = nil // пустой объект -> NULL
+				}
+			case []interface{}:
+				// нормализуем пустой объект [] до nil, чтобы в бд было NULL
+				if len(v) == 0 {
+					newRequest.AdditionalPrompt = nil // пустой массив -> NULL
+				}
+			default:
+				tools.WriteError(w, error_type.NewBadRequest("additional_prompt должен быть массивом [] или null"))
+				return
+			}
+		}
+
+		// если json был не пустой, проверяем, что он соответствует нужному виду
+		if newRequest.AdditionalPrompt != nil {
+			if err := tools.ValidateAdditionalPrompt(*newRequest.AdditionalPrompt); err != nil {
+				tools.WriteError(w, error_type.NewBadRequest(err.Error()))
+				return
+			}
+		}
+
+		// если все ок, записываем
 		updateData["additional_prompt"] = *newRequest.AdditionalPrompt
 	}
 

@@ -5,3 +5,7 @@ torchaudio
 qwen-asr
 accelerate
 pydub
+
+fastapi
+uvicorn[standard]
+requests

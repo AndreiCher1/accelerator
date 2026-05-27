@@ -33,6 +33,8 @@ type AddCreatorRequestDTO struct {
 	FullName string `json:"full_name" validate:"required,fio,max=100"`
 	Position string `json:"position" validate:"required,max=100"`
 	Password string `json:"password" validate:"required,min=8"`
+	 // если флаг тру, то проверяем количество пользователей в бд, если их нет, то возвращаем тестовые данные, не меняем бд. Если он false, значит креатор уже создан, кидаем ошибку 403.
+	IsCheck  bool   `json:"is_check" validate:"required, oneof=true false"`
 }
 
 type AddCreatorResponseDTO struct {
@@ -59,7 +61,7 @@ func (trans *AdminTransport) AddCreatorHandle(w http.ResponseWriter, r *http.Req
 
 	userInfo, err := trans.serv.AddCreatorService(
 		ctx,
-		newRequest.Login, newRequest.Password, newRequest.FullName, newRequest.Position,
+		newRequest.Login, newRequest.Password, newRequest.FullName, newRequest.Position, newRequest.IsCheck,
 	)
 	if err != nil {
 		tools.WriteError(w, err)
