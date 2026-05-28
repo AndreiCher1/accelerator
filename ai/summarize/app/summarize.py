@@ -65,8 +65,8 @@ app = FastAPI(lifespan=lifespan)
 # ---------- Модель запроса ----------
 class SummarizeRequest(BaseModel):
     input_url: str   # Presigned GET на JSON стенограммы
-    output_url: str  # Presigned PUT для итогового JSON-отчёта
     prompt: str      # Системный промпт (инструкция для LLM)
+    output_url: str  # Presigned PUT для итогового JSON-отчёта
 
 def run_summarization(input_url: str, output_url: str, prompt: str, task_id: str):
     local_input = f"/tmp/{task_id}_transcript.json"

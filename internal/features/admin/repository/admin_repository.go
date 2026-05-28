@@ -573,7 +573,7 @@ func (repo *AdminRepository) SelectGroupsForCreator(ctx context.Context) (*[]dom
 }
 
 // группы, в которых состоит админ, с owner_id
-func (repo *AdminRepository) SelectGroupsForAdmin(ctx context.Context, adminID string) (*[]domains.Group, error) {
+func (repo *AdminRepository) SelectGroupsForAdminAndUser(ctx context.Context, adminID string) (*[]domains.Group, error) {
 	query := `
         SELECT g.id, g.name, g.description, g.created_by, g.owner_id, g.created_at,
                COALESCE(user_counts.cnt, 0) AS member_count

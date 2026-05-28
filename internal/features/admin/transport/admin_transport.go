@@ -541,11 +541,8 @@ func (trans *AdminTransport) GetGroupsHandle(w http.ResponseWriter, r *http.Requ
 		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
 		return
 	}
-	// и первичная проверка доступа
-	if callerRole != "creator" && callerRole != "admin" {
-		tools.WriteError(w, error_type.NewNotFound("Страница не найдена"))
-		return
-	}
+	_ = callerRole
+
 
 	groups, err := trans.serv.GetGroupsService(ctx, callerID)
 	if err != nil {

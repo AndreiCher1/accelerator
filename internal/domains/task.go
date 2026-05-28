@@ -57,10 +57,10 @@ const (
 	StatusProcessingUpload     TaskStatus = "processing_upload" // начальный статус, до полной загрузки в s3
 	StatusPendingDenoise       TaskStatus = "pending_denoise"
 	StatusProcessingDenoise    TaskStatus = "processing_denoise"
-	StatusPendingTranscribe    TaskStatus = "pending_transcribe"
-	StatusProcessingTranscribe TaskStatus = "processing_transcribe"
 	StatusPendingDiarize       TaskStatus = "pending_diarize"
 	StatusProcessingDiarize    TaskStatus = "processing_diarize"
+	StatusPendingTranscribe    TaskStatus = "pending_transcribe"
+	StatusProcessingTranscribe TaskStatus = "processing_transcribe"
 	StatusPendingSummarize     TaskStatus = "pending_summarize"
 	StatusProcessingSummarize  TaskStatus = "processing_summarize"
 	StatusDone                 TaskStatus = "done"
@@ -80,14 +80,14 @@ func (s TaskStatus) NextStatus() TaskStatus {
 	case StatusPendingDenoise:
 		return StatusProcessingDenoise
 	case StatusProcessingDenoise:
-		return StatusPendingTranscribe
-	case StatusPendingTranscribe:
-		return StatusProcessingTranscribe
-	case StatusProcessingTranscribe:
 		return StatusPendingDiarize
 	case StatusPendingDiarize:
 		return StatusProcessingDiarize
 	case StatusProcessingDiarize:
+		return StatusPendingTranscribe
+	case StatusPendingTranscribe:
+		return StatusProcessingTranscribe
+	case StatusProcessingTranscribe:
 		return StatusPendingSummarize
 	case StatusPendingSummarize:
 		return StatusProcessingSummarize

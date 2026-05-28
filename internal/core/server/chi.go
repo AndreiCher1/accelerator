@@ -64,8 +64,6 @@ func StartNewChiServer(
 			router.Route("/groups", func(router chi.Router) {
 				// создание группы, доступно только администратору
 				router.Post("/", adminTrans.CreateGroupHandle)
-				// Получение списка групп (каждый видит свои)
-				router.Get("/", adminTrans.GetGroupsHandle)
 				// Информация о группе + участники, креатор видит всех, админ только user, себя не видит
 				router.Get("/{groupID}", adminTrans.GetMembersGroupHandle)
 				// Редактирование группы (права проверяются в сервисе: creator – любую, admin – только свою)
@@ -122,6 +120,13 @@ func StartNewChiServer(
 			router.Put("/{patternID}", patternsTrans.EditPattern)
 			// удаление шаблона
 			router.Delete("/{patternID}", patternsTrans.DeletePattern)
+		})
+
+		// работа с группами глобально для всех пользователей
+		router.Route("/groups", func(router chi.Router) {
+			router.Use(middleware.AuthMiddleware(cfg))
+			// Получение списка групп (каждый видит свои)
+			router.Get("/", adminTrans.GetGroupsHandle)
 		})
 
 		// работа со своим аккаунтом

@@ -64,16 +64,16 @@ async def transcribe(req: TranscribeRequest):
 
     try:
         # 1. Скачать аудио
-        print(f"[INFO] Скачивание аудио {req.input_url}")
-        r = requests.get(req.input_url, stream=True)
+        print(f"[INFO] Скачивание аудио {req.denoised_url}")
+        r = requests.get(req.denoised_url, stream=True)
         r.raise_for_status()
         with open(audio_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
 
         # 2. Скачать JSON диаризации
-        print(f"[INFO] Скачивание диаризации {req.diarization_url}")
-        r = requests.get(req.diarization_url)
+        print(f"[INFO] Скачивание диаризации {req.input_url}")
+        r = requests.get(req.input_url)
         r.raise_for_status()
         with open(diar_json_path, 'wb') as f:
             f.write(r.content)

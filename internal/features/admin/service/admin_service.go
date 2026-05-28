@@ -564,7 +564,7 @@ func (serv *AdminService) GetMembersGroupService(ctx context.Context, callerID, 
 }
 
 // ======================================================
-//          ПОЛУЧЕНИЕ ВСЕХ ГРУПП (С ФЛАГАМИ)
+// ПОЛУЧЕНИЕ ВСЕХ ГРУПП (С ФЛАГАМИ) ДЛЯ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ
 // ======================================================
 
 // возвращает список групп, видимых пользователю, с флагами.
@@ -574,16 +574,12 @@ func (serv *AdminService) GetGroupsService(ctx context.Context, callerID string)
 		return nil, err
 	}
 
-	if callerUser.Role != "creator" && callerUser.Role != "admin" {
-		return nil, error_type.NewNotFound("Страница не найдена")
-	}
-
 	var groups *[]domains.Group
 
 	if callerUser.Role == "creator" {
 		groups, err = serv.repo.SelectGroupsForCreator(ctx)
-	} else { // admin
-		groups, err = serv.repo.SelectGroupsForAdmin(ctx, callerID)
+	} else { // admin or user
+		groups, err = serv.repo.SelectGroupsForAdminAndUser(ctx, callerID)
 	}
 	if err != nil {
 		return nil, err

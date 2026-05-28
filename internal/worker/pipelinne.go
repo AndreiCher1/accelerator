@@ -92,188 +92,188 @@ func (o *Orchestrator) runStageWorker(ctx context.Context, stage config.StageCon
 		}
 
 		// 4. мы уже взяли задачу, ошибки не произошло, поэтому освобождаем память в конце обработки
-		defer func() {
-			o.resourceManager.Release(stage.Quota)
+		// помещаем весь код в анонимную функцию, чтобы после conntinue выполнился defer с освобождением памяти
+		func() {
+			defer o.resourceManager.Release(stage.Quota)
+
+			// ============================================= ГЕНЕРАЦИЯ URL ДЛЯ ВЗАИМОДЕЙСТВИЯ ===================================================
+			inputKey := stage.InputKeyFunc(task.GroupID, task.TaskID)
+			outputKey := stage.OutputKeyFunc(task.GroupID, task.TaskID)
+
+			// генерируем ссылки длительностью максимального timeout, чтобы успели воркеры записать и ссылки не закончили действие
+			inputURL, err := o.minio.GetPresignedGetURL(ctx, inputKey, o.cfg.AIWorkersTimeoutHour)
+			if err != nil {
+				// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
+				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+				}
+				slog.Error(fmt.Sprintf("generate get URL s3 task for %s:", stage.Name), "err", err)
+				return
+			}
+			outputURL, err := o.minio.GetPresignedPutURL(ctx, outputKey, o.cfg.AIWorkersTimeoutHour)
+			if err != nil {
+				// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
+				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+				}
+				slog.Error(fmt.Sprintf("generate put URL s3 task for %s:", stage.Name), "err", err)
+				return
+			}
+
+			// ==================================== ОТПРАВКА ЗАПРОСА НА ОБРАБОТКУ И ПОЛУЧЕНИЕ ОТВЕТА ============================================
+			// 1. собираем запрос исходя из модели
+			type RequestDTO struct {
+				InputURL   string `json:"input_url"`
+				OutputURL  string `json:"output_url"`
+				Prompt     string `json:"prompt,omitempty"`
+				DenoiseURL string `json:"denoised_url,omitempty"`
+			}
+
+			var newRequest RequestDTO
+
+			// если транскрибация, то передаем еще и ссылку на исходный файл помимо диаризации
+			if stage.StatusProcessing == string(domains.StatusProcessingTranscribe) {
+				// генерируем ссылку длительностью максимального timeout, чтобы успели воркеры записать и ссылки не закончили действие
+				// на деноизинг аудио, чттобы транскрибация нормально работала
+				denoiseURL, err := o.minio.GetPresignedGetURL(ctx, config.DenoisedKey(task.GroupID, task.TaskID), o.cfg.AIWorkersTimeoutHour)
+				if err != nil {
+					// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
+					if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+						slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+					}
+					slog.Error(fmt.Sprintf("generate get URL s3 task for %s:", stage.Name), "err", err)
+					return
+				}
+
+				newRequest = RequestDTO{
+					InputURL:   inputURL, // ссылка на диаризацию
+					DenoiseURL: denoiseURL, // на аудио
+					OutputURL:  outputURL, 
+				}
+				// если суммаризация, то передаем еще промпт запроса
+			} else if stage.StatusProcessing == string(domains.StatusProcessingSummarize) {
+				// получаем основной и дополнительный промпт по ID задачи
+				promptsInfo, err := o.tasksRepo.SelectPromptsByTaskID(ctx, task.TaskID)
+				if err != nil {
+					// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
+					if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+						slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+					}
+					slog.Error(fmt.Sprintf("generate put URL s3 task for %s:", stage.Name), "err", err)
+					return
+				}
+				// собираем из них один нормально оформленный промпт
+				fullPromptString := tools.BuildFullPrompt(promptsInfo)
+
+				// получаем промпт дополнительный и основной, соединяем в один
+				newRequest = RequestDTO{
+					InputURL:  inputURL, // на транскрибацию
+					Prompt:    fullPromptString, // на созданный промпт
+					OutputURL: outputURL,
+				}
+			} else {
+				// иначе базовый запрос
+				newRequest = RequestDTO{
+					InputURL:  inputURL,
+					OutputURL: outputURL,
+				}
+			}
+
+			// 2. сериализация json
+			jsonData, err := json.Marshal(newRequest)
+			if err != nil {
+				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+				}
+				slog.Error(fmt.Sprintf("json marshal task for %s:", stage.Name), "err", err)
+				return
+			}
+
+			// 3. создание запроса
+			req, err := http.NewRequest("POST", stage.EndPoint, bytes.NewBuffer(jsonData))
+			if err != nil {
+				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+				}
+				slog.Error(fmt.Sprintf("create request for %s:", stage.Name), "err", err)
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			// 4. отправка запроса
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err != nil {
+				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+				}
+				slog.Error(fmt.Sprintf("send request for %s:", stage.Name), "err", err)
+				return
+			}
+			defer resp.Body.Close() // заранее закрываем соединение
+
+			// 5. обработка ответа
+			if resp.StatusCode == 200 {
+				// После конца обработки, если все ок, обновляем статус задачи
+				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.NextStatus); err != nil {
+					slog.Error(fmt.Sprintf("failed change new status after the end of processing %s:", stage.Name), "err", err)
+					return
+				}
+			} else {
+				// иначе ставим ошибку в статус задачи
+				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+				}
+				slog.Error(fmt.Sprintf("bad response for %s:", stage.Name), "err", err)
+				return
+			}
+
+			// =============================== ЕСЛИ НОВЫЙ СТАТУС DONE, СБОРКА RESULT_JSON И ДОБАВЛЕНИЕ В БД =======================================
+			if stage.NextStatus == string(domains.StatusDone) {
+				// 1. генерируем ссылку на диаризацию по ключу input
+				diarizeURL, err := o.minio.GetPresignedGetURL(ctx, inputKey, o.cfg.AIWorkersTimeoutHour)
+				if err != nil {
+					// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
+					if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+						slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+					}
+					slog.Error(fmt.Sprintf("generate get URL s3 task for %s:", stage.Name), "err", err)
+					return
+				}
+				// 2. генерируем ссылку на саммари по ключу output
+				summaryURL, err := o.minio.GetPresignedGetURL(ctx, outputKey, o.cfg.AIWorkersTimeoutHour)
+				if err != nil {
+					// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
+					if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+						slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+					}
+					slog.Error(fmt.Sprintf("generate put URL s3 task for %s:", stage.Name), "err", err)
+					return
+				}
+
+				// 3. собираем ответ для результатов
+				resultData := map[string]string{
+					"diarize": diarizeURL,
+					"summary": summaryURL,
+				}
+
+				// 4. сериализация json
+				resultJSON, err := json.Marshal(resultData)
+				if err != nil {
+					// ставим статус ошибки
+					if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
+						slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
+					}
+					slog.Error(fmt.Sprintf("json marshal result for %s:", stage.Name), "err", err)
+					return
+				}
+
+				// 5. Обновляем result_json
+				if err := o.tasksRepo.UpdateTaskResult(ctx, task.TaskID, resultJSON); err != nil {
+					slog.Error(fmt.Sprintf("failed save result for %s:", stage.Name), "err", err)
+					return
+				}
+			}
 		}()
-
-		// ============================================= ГЕНЕРАЦИЯ URL ДЛЯ ВЗАИМОДЕЙСТВИЯ ===================================================
-		inputKey := stage.InputKeyFunc(task.GroupID, task.TaskID)
-		outputKey := stage.OutputKeyFunc(task.GroupID, task.TaskID)
-
-		// генерируем ссылки длительностью максимального timeout, чтобы успели воркеры записать и ссылки не закончили действие
-		inputURL, err := o.minio.GetPresignedGetURL(ctx, inputKey, o.cfg.AIWorkersTimeoutHour)
-		if err != nil {
-			// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
-			if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-				slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-			}
-			slog.Error(fmt.Sprintf("generate get URL s3 task for %s:", stage.Name), "err", err)
-			continue
-		}
-		outputURL, err := o.minio.GetPresignedPutURL(ctx, outputKey, o.cfg.AIWorkersTimeoutHour)
-		if err != nil {
-			// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
-			if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-				slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-			}
-			slog.Error(fmt.Sprintf("generate put URL s3 task for %s:", stage.Name), "err", err)
-			continue
-		}
-
-		// ==================================== ОТПРАВКА ЗАПРОСА НА ОБРАБОТКУ И ПОЛУЧЕНИЕ ОТВЕТА ============================================
-		// 1. собираем запрос исходя из модели
-		type RequestDTO struct {
-			InputURL   string `json:"input_url"`
-			OutputURL  string `json:"output_url"`
-			Prompt     string `json:"prompt,omitempty"`
-			DenoiseURL string `json:"denoised_url,omitempty"`
-		}
-
-		var newRequest RequestDTO
-
-		// если транскрибация, то передаем еще и ссылку на исходный файл помимо диаризации
-		if stage.StatusProcessing == string(domains.StatusProcessingTranscribe) {
-			// генерируем ссылку длительностью максимального timeout, чтобы успели воркеры записать и ссылки не закончили действие
-			// на деноизинг аудио, чттобы транскрибация нормально работала
-			denoiseURL, err := o.minio.GetPresignedGetURL(ctx, config.DenoisedKey(task.GroupID, task.TaskID), o.cfg.AIWorkersTimeoutHour)
-			if err != nil {
-				// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
-				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-				}
-				slog.Error(fmt.Sprintf("generate get URL s3 task for %s:", stage.Name), "err", err)
-				continue
-			}
-
-			newRequest = RequestDTO{
-				InputURL:   inputURL,
-				DenoiseURL: denoiseURL,
-				OutputURL:  outputURL,
-			}
-			// если суммаризация, то передаем еще промпт запроса
-		} else if stage.StatusProcessing == string(domains.StatusProcessingSummarize) {
-			// получаем основной и дополнительный промпт по ID задачи
-			promptsInfo, err := o.tasksRepo.SelectPromptsByTaskID(ctx, task.TaskID)
-			if err != nil {
-				// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
-				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-				}
-				slog.Error(fmt.Sprintf("generate put URL s3 task for %s:", stage.Name), "err", err)
-				continue
-			}
-			// собираем из них один нормально оформленный промпт
-			fullPromptString := tools.BuildFullPrompt(promptsInfo)
-
-			// получаем промпт дополнительный и основной, соединяем в один
-			newRequest = RequestDTO{
-				InputURL:  inputURL,
-				OutputURL: outputURL,
-				Prompt:    fullPromptString,
-			}
-		} else {
-			// иначе базовый запрос
-			newRequest = RequestDTO{
-				InputURL:  inputURL,
-				OutputURL: outputURL,
-			}
-		}
-
-		// 2. сериализация json
-		jsonData, err := json.Marshal(newRequest)
-		if err != nil {
-			if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-				slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-			}
-			slog.Error(fmt.Sprintf("json marshal task for %s:", stage.Name), "err", err)
-			continue
-		}
-
-		// 3. создание запроса
-		req, err := http.NewRequest("POST", stage.EndPoint, bytes.NewBuffer(jsonData))
-		if err != nil {
-			if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-				slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-			}
-			slog.Error(fmt.Sprintf("create request for %s:", stage.Name), "err", err)
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		// 4. отправка запроса
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-				slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-			}
-			slog.Error(fmt.Sprintf("send request for %s:", stage.Name), "err", err)
-			continue
-		}
-		defer resp.Body.Close() // заранее закрываем соединение
-
-		// 5. обработка ответа
-		if resp.StatusCode == 200 {
-			// После конца обработки, если все ок, обновляем статус задачи
-			if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.NextStatus); err != nil {
-				slog.Error(fmt.Sprintf("failed change new status after the end of processing %s:", stage.Name), "err", err)
-				continue
-			}
-		} else {
-			// иначе ставим ошибку в статус задачи
-			if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-				slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-			}
-			slog.Error(fmt.Sprintf("bad response for %s:", stage.Name), "err", err)
-			continue
-		}
-
-		// =============================== ЕСЛИ НОВЫЙ СТАТУС DONE, СБОРКА RESULT_JSON И ДОБАВЛЕНИЕ В БД =======================================
-		if stage.NextStatus == string(domains.StatusDone) {
-			// 1. генерируем ссылку на диаризацию по ключу input
-			diarizeURL, err := o.minio.GetPresignedGetURL(ctx, inputKey, o.cfg.LimitUploadAudio)
-			if err != nil {
-				// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
-				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-				}
-				slog.Error(fmt.Sprintf("generate get URL s3 task for %s:", stage.Name), "err", err)
-				continue
-			}
-			// 2. генерируем ссылку на саммари по ключу output
-			summaryURL, err := o.minio.GetPresignedGetURL(ctx, outputKey, o.cfg.LimitUploadAudio)
-			if err != nil {
-				// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
-				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-				}
-				slog.Error(fmt.Sprintf("generate put URL s3 task for %s:", stage.Name), "err", err)
-				continue
-			}
-
-			// 3. собираем ответ для результатов
-			resultData := map[string]string{
-				"diarization": diarizeURL,
-				"summary":     summaryURL,
-			}
-
-			// 4. сериализация json
-			resultJSON, err := json.Marshal(resultData)
-			if err != nil {
-				// ставим статус ошибки
-				if err := o.tasksRepo.UpdateTaskStatus(ctx, task.TaskID, stage.StatusError); err != nil {
-					slog.Error(fmt.Sprintf("failed change status error %s:", stage.Name), "err", err)
-				}
-				slog.Error(fmt.Sprintf("json marshal result for %s:", stage.Name), "err", err)
-				continue
-			}
-
-			// 5. Обновляем result_json
-			if err := o.tasksRepo.UpdateTaskResult(ctx, task.TaskID, resultJSON); err != nil {
-				slog.Error(fmt.Sprintf("failed save result for %s:", stage.Name), "err", err)
-				continue
-			}
-		}
-
 	}
 }

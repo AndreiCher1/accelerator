@@ -1,0 +1,4 @@
+{"time":"2026-05-28T12:25:13.529681662Z","level":"ERROR","msg":"sending HTTP error","status":401,"client_message":"Невалидный access токен","internal_error":null}
+{"time":"2026-05-28T12:28:04.004861649Z","level":"ERROR","msg":"sending HTTP error","status":401,"client_message":"missing authentication context","internal_error":null}
+{"time":"2026-05-28T12:28:37.423256979Z","level":"ERROR","msg":"sending HTTP error","status":401,"client_message":"missing authentication context","internal_error":null}
+{"time":"2026-05-28T12:31:01.097859386Z","level":"ERROR","msg":"sending HTTP error","status":404,"client_message":"Страница не найдена","internal_error":null}
