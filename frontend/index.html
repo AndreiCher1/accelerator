@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Content Security Policy: ограничиваем сетевые запросы фронта
+      исключительно своим origin'ом (через который ходит /api прокси Vite)
+      и origin'ом бекенда. Это значит, что даже если в проект попадёт
+      сторонний скрипт, он не сможет «слить» данные на чужой домен.
+
+      connect-src 'self'                  — fetch/XHR/WebSocket к самому фронту (включая Vite-прокси /api и HMR)
+      connect-src http://localhost:8000   — прямые запросы к бекенду (VITE_API_URL)
+      connect-src ws: wss:                — нужно Vite HMR в dev-режиме
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://localhost:8000 http://127.0.0.1:8000 ws: wss:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self';"
+    />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>accelerator</title>
+  </head>
+  <body>
+    <div id="app" class="font-inter dark:bg-dark bg-white tracking-[-2%] transition-colors duration-300"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

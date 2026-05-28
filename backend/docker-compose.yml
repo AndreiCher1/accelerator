@@ -1,0 +1,202 @@
+services:
+  postgres:
+    image: postgres:16-alpine # ставим легковесный образ бд
+    container_name: accelerator-postgres
+    environment: # задаем переменные среды, образ сам создаст пользователя с таким паролем и создаст бд с таким именем
+      POSTGRES_USER: "${POSTGRES_USER}" 
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+    ports: # пробрасываем порт из контейнера на локальную машину, чтобы можно было подключиться вне контейнера
+      - "5432:${POSTGRES_PORT}"
+    volumes: # сохраняем данные с бд из контейнера в папку на локальной машине, чтобы не стирались при перезагрузке контейнера
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck: # проверка, работает ли база данных каждые n секунд
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: # подключаем к созданной локальной сети, чтобы контейнеры могли общаться между собой 
+      - accelerator-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: accelerator-minio
+    command: server /data --console-address ":9001"
+    environment: # образ сам создаст пользователя с таким паролем
+      MINIO_ROOT_USER: "${S3_ACCESS_KEY_ID}"
+      MINIO_ROOT_PASSWORD: "${S3_SECRET_ACCESS_KEY}"
+      MINIO_SERVER_URL: "${MINIO_SERVER_URL}" # чтобы генерировать публичные ссылки с моим вдресом, а не minio:9000
+      MINIO_BROWSER_CORS: "${CLIENT_URL}" # чтобы клиент мог взаимодействовать с s3
+    ports: # 9000 - порт самого клиента minio, 9001 - веб-консоль небольшой графический интерфейс
+      - "9000:${S3_CLIENT_PORT}"
+      - "9001:${S3_CONSOLE_PORT}"
+    volumes: # также прокидываем общую папку, чтобы данные не удалялись
+      - minio_data:/data
+    networks:
+      - accelerator-network
+
+  migrate:
+    image: migrate/migrate:v4.17.0
+    container_name: accelerator-migrate
+    volumes:
+      - ./migrations:/migrations # монтируем папку с миграциями внутрь докер контейнера
+    command: ["-path", "/migrations", "-database", "${DB_DSN}", "up"] # сразу накатываем все миграции при запуске приложения
+    depends_on: # ставиим зависимость, что выполнять миграции можно только если бд работает нормально
+      postgres:
+        condition: service_healthy
+    networks:
+      - accelerator-network
+
+  app:
+    build: . # берем образ из докер файла
+    container_name: accelerator-go   
+    environment: # так как мы не кидаем туда .env, нам нужно предоставить доступ к переменным из него
+      SERVER_PORT: "${SERVER_PORT}"
+      DB_DSN: "${DB_DSN}"
+      JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET}"
+      JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET}"
+      ACCESS_TIME_MINUTE: "${ACCESS_TIME_MINUTE}"
+      REFRESH_TIME_HOURS: "${REFRESH_TIME_HOURS}"
+
+      SIZE_LIMIT_AUDIO_MB: "${SIZE_LIMIT_AUDIO_MB}"
+      GENERATE_PASSWORD_LENGTH: "${GENERATE_PASSWORD_LENGTH}"
+      LIMIT_UPLOAD_AUDIO_MINUTE: "${LIMIT_UPLOAD_AUDIO_MINUTE}"
+      MAX_UPLOAD_WORKERS: "${MAX_UPLOAD_WORKERS}"
+
+      S3_ENDPOINT: "${S3_ENDPOINT}"
+      S3_ACCESS_KEY_ID: "${S3_ACCESS_KEY_ID}"
+      S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY}"
+      S3_BUCKET: "${S3_BUCKET}"
+      S3_USESSL: "${S3_USESSL}"
+    volumes: # пробрасываем папку с логами напрямую в докер контейнер 
+      - ./logs:/root/logs
+    ports:
+      - "8000:${GO_SERVER_PORT}"
+    depends_on:
+      migrate: # ждем пока миграции успешно применятся и запустится объектное хранилище
+        condition: service_completed_successfully
+      minio:
+        condition: service_started
+    networks:
+      - accelerator-network
+
+
+  denoise-worker:
+    build:
+      context: ./ai/denoise   # путь к папке с Dockerfile и кодом
+      dockerfile: Dockerfile
+    container_name: denoise-worker
+    environment: # пробрасываем, чтобы получить потом в докере при запуске через unicorn
+      DENOISE_PORT: "${DENOISE_PORT}"
+    volumes: # один раз загружаем модель и сохраняем в valume, чтобы не загружать несколько раз заново
+    - denoise_models:/app/models
+    ports:
+      - "${DENOISE_PORT}:${DENOISE_PORT}"   # для отладки, в продакшене не обязательно
+    # Важно: поддержка GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - accelerator-network
+
+  diarize-worker:
+    build:
+      context: ./ai/diarize
+      dockerfile: Dockerfile
+    container_name: diarize-worker
+    environment:
+      HF_TOKEN: ${DIARIZE_HF_TOKEN} # токен Hugging Face из .env
+      HF_HOME: "/app/models/huggingface" # кеш моделей
+      DIARIZE_PORT: "${DIARIZE_PORT}"
+    volumes:
+      - diarize_models:/app/models # том для сохранения моделей
+    ports:
+      - "${DIARIZE_PORT}:${DIARIZE_PORT}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - accelerator-network
+
+
+  asr-worker:
+    build:
+      context: ./ai/transcribe
+      dockerfile: Dockerfile
+    container_name: asr-worker
+    environment:
+      HF_HOME: "/app/models/huggingface"
+      MODELSCOPE_CACHE: "/app/models/modelscope"
+      TRANSCRIBE_PORT: "${TRANSCRIBE_PORT}"
+    volumes:
+      - asr_models:/app/models
+    ports:
+      - "${TRANSCRIBE_PORT}:${TRANSCRIBE_PORT}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - accelerator-network
+
+
+  summarize-worker:
+    build:
+      context: ./ai/summarize
+      dockerfile: Dockerfile
+    container_name: summarize-worker
+    environment:
+      LOCAL_MODEL_PATH: "/app/models/qwen-model.gguf" # путь внутри контейнера к локальной модели
+      SUMMARY_PORT: "${SUMMARY_PORT}"
+    volumes:
+      - ./models:/app/models # папка с моделями на хосте
+    ports:
+      - "${SUMMARY_PORT}:${SUMMARY_PORT}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - accelerator-network
+
+volumes: # используем именованные тома, а не привязка к конкретной папке
+  postgres_data:
+  minio_data:
+  denoise_models:
+  diarize_models:
+  asr_models:
+
+networks:
+  accelerator-network:
+    driver: bridge
