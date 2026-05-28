@@ -29,6 +29,7 @@ type Config struct {
 	LimitUploadAudio       time.Duration
 	MaxUploadWorkers       int
 	AIWorkersTimeoutHour   time.Duration
+	LimitAudioURLMinuts    time.Duration
 
 	TotalVRAMGB int
 	TotalRAMGB  int
@@ -61,6 +62,7 @@ func LoadConfig() *Config {
 		LimitUploadAudio:       getEnvDuration("LIMIT_UPLOAD_AUDIO_MINUTE", 30) * time.Minute,
 		MaxUploadWorkers:       getEnvInt("MAX_UPLOAD_WORKERS", 20),
 		AIWorkersTimeoutHour:   getEnvDuration("AI_WORKERS_HTTP_TIMEOUT_HOURS", 2) * time.Hour,
+		LimitAudioURLMinuts:    getEnvDuration("LIMIT_AUDIO_URL_MINUTS", 60) * time.Minute,
 
 		TotalVRAMGB: getEnvInt("TOTAL_VRAM_GB", 12),
 		TotalRAMGB:  getEnvInt("TOTAL_RAM_GB", 16),

@@ -7,7 +7,9 @@ import (
 	"accelerator/internal/domains"
 	"accelerator/internal/features/tasks/repository"
 	"context"
+	"fmt"
 	"math"
+	"time"
 )
 
 type TasksService struct {
@@ -54,7 +56,7 @@ func (serv *TasksService) UploadTaskService(
 	task, err := serv.repo.CreateTask(
 		ctx, userID, groupID,
 		taskName, taskDescription, meetingDate, patternID,
-		filePath, fileName, statusTask,
+		fileName, filePath, statusTask,
 	)
 	if err != nil {
 		return nil, err
@@ -65,6 +67,36 @@ func (serv *TasksService) UploadTaskService(
 
 	return task, nil
 
+}
+
+// ================================== ПОЛУЧЕНИЕ ССЫЛКИ НА АУДИО =====================================
+// возвращает ссылку и время истечения
+func (serv *TasksService) GetAudioTaskHandle(ctx context.Context, callerID, taskID string) (string, time.Time, error) {
+	// проверка существования задачи и получение задачи
+	taskInfo, err := serv.repo.SelectTaskByID(ctx, taskID)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	// проверяем, имеет ли пользователь доступ к этой задаче
+	exists, err := serv.repo.CheckUserInTaskGroup(ctx, callerID, taskID)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if !exists {
+		return "", time.Time{}, error_type.NewNotFound("Задача не найдена")
+	}
+
+	// генерируем ссылку на файл
+	audioURL, err := serv.minio.GetPresignedGetURL(ctx, taskInfo.FilePath, serv.cfg.LimitAudioURLMinuts)
+	if err != nil {
+		// ставим у задачи статус ошибки и переходим на следующую итерацию цикла
+		return "", time.Time{}, error_type.NewInternal(fmt.Errorf("generate URL audio: %w", err))
+	}
+
+	expiresAt := time.Now().Add(serv.cfg.LimitAudioURLMinuts)
+
+	return audioURL, expiresAt, nil
 }
 
 // ================================== ПОЛУЧЕНИЕ СТАТУСА ЗАДАЧИ =====================================

@@ -87,3 +87,8 @@ type EditTaskRequestDTO struct {
 	Description *string `json:"description" validate:"omitempty"`
 	MeetingDate *string `json:"meeting_date" validate:"omitempty"`
 }
+
+type AudioResponseDTO struct {
+	AudioURL string `json:"url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}

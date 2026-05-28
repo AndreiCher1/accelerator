@@ -91,6 +91,8 @@ func StartNewChiServer(
 			// для получения информации о статусе выполнения задачи,
 			// такой как статус, в процессе или нет, колическтво человек в очереди перед ним и примерное время ожидания
 			router.Get("/{taskID}/status", tasksTrans.CheckStatusTaskHandle)
+			// получение ссылки на аудио
+			router.Get("/{taskID}/audio", tasksTrans.GetAudioTaskHandle)
 			// для получения обобщенной информации о задаче, а также результатов, если статус DONE
 			// в том числе флаги для изменения
 			router.Get("/{taskID}", tasksTrans.GetTaskHandle)
@@ -99,7 +101,7 @@ func StartNewChiServer(
 			// изменение информации о задаче, если статус Done, 
 			// возвращет измененную задачу, а также флаг для изменения
 			router.Put("/{taskID}", tasksTrans.EditTaskHandle)
-
+			// удаление задачи, может только креатор
 			router.Delete("/{taskID}", tasksTrans.DeleteTaskHandle)
 		})
 

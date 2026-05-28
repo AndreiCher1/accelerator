@@ -34,7 +34,7 @@ type AddCreatorRequestDTO struct {
 	Position string `json:"position" validate:"required,max=100"`
 	Password string `json:"password" validate:"required,min=8"`
 	 // если флаг тру, то проверяем количество пользователей в бд, если их нет, то возвращаем тестовые данные, не меняем бд. Если он false, значит креатор уже создан, кидаем ошибку 403.
-	IsCheck  bool   `json:"is_check" validate:"required, oneof=true false"`
+	IsCheck  bool   `json:"is_check" validate:"omitempty"`
 }
 
 type AddCreatorResponseDTO struct {

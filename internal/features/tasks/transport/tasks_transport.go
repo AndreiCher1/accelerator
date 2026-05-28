@@ -265,7 +265,7 @@ func (trans *TasksTransport) UploadHandle(w http.ResponseWriter, r *http.Request
 		ctx,
 		callerID, groupID,
 		newRequest.TaskName, newRequest.Description, newRequest.MeetingDate, newRequest.PatternID,
-		objectKey, originalFilename, string(domains.StatusProcessingUpload),
+		originalFilename, objectKey, string(domains.StatusProcessingUpload),
 	)
 	if err != nil {
 		tools.WriteError(w, err)
@@ -382,6 +382,39 @@ func (trans *TasksTransport) processUpload(
 		taskErr = fmt.Errorf("загрузка в S3: %w", err)
 		return
 	}
+}
+
+// =========================================== ПОЛУЧЕНИЕ СТАТУСА ЗАДАЧИ ==========================================
+
+// GET api/v1/tasks/{taskID}/audio
+func (trans *TasksTransport) GetAudioTaskHandle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID, ok := authctx.GetUserID(ctx)
+	if !ok {
+		tools.WriteError(w, error_type.NewUnauthorized("missing authentication context"))
+		return
+	}
+
+	taskID := chi.URLParam(r, "taskID")
+	if err := trans.validate.Struct(dto.TaskIDRequestDTO{TaskID: taskID}); err != nil {
+		tools.WriteError(w, error_type.NewBadRequest("некорректный ID задачи"))
+		return
+	}
+
+	// получаем всю нужную информацию о статусе задачи
+	audioURL, expiresAt, err := trans.serv.GetAudioTaskHandle(ctx, callerID, taskID)
+	if err != nil {
+		tools.WriteError(w, err)
+		return
+	}
+
+	// маппим результат в дто и отправляем на клиент
+	newResponse := dto.AudioResponseDTO{
+		AudioURL: audioURL,
+		ExpiresAt: expiresAt,
+	}
+
+	tools.WriteJSON(w, http.StatusOK, newResponse)
 }
 
 // =========================================== ПОЛУЧЕНИЕ СТАТУСА ЗАДАЧИ ==========================================

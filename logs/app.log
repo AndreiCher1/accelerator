@@ -2,3 +2,8 @@
 {"time":"2026-05-28T12:28:04.004861649Z","level":"ERROR","msg":"sending HTTP error","status":401,"client_message":"missing authentication context","internal_error":null}
 {"time":"2026-05-28T12:28:37.423256979Z","level":"ERROR","msg":"sending HTTP error","status":401,"client_message":"missing authentication context","internal_error":null}
 {"time":"2026-05-28T12:31:01.097859386Z","level":"ERROR","msg":"sending HTTP error","status":404,"client_message":"Страница не найдена","internal_error":null}
+{"time":"2026-05-28T14:33:17.026907429Z","level":"ERROR","msg":"sending HTTP error","status":401,"client_message":"Невалидный access токен","internal_error":null}
+{"time":"2026-05-28T14:34:23.659721507Z","level":"ERROR","msg":"sending HTTP error","status":401,"client_message":"Невалидный access токен","internal_error":null}
+{"time":"2026-05-28T14:35:00.332529673Z","level":"ERROR","msg":"sending HTTP error","status":400,"client_message":"Ошибка валидации JSON","internal_error":null}
+{"time":"2026-05-28T14:35:14.977149229Z","level":"ERROR","msg":"sending HTTP error","status":400,"client_message":"Ошибка валидации JSON","internal_error":null}
+{"time":"2026-05-28T14:35:57.958774646Z","level":"ERROR","msg":"sending HTTP error","status":400,"client_message":"Ошибка валидации JSON","internal_error":null}
